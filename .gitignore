@@ -48,3 +48,6 @@ Thumbs.db
 *.bak
 *.swp
 
+
+# Temporary files and old post-processors
+Temp/
