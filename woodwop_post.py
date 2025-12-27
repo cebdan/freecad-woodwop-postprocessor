@@ -84,6 +84,111 @@ def debug_log(message):
             pass
 
 
+def parse_arguments(argstring):
+    """Parse command-line arguments and set global configuration variables.
+    
+    Args:
+        argstring: String containing space-separated arguments (e.g., "--no-comments --precision=3")
+    
+    Supported arguments:
+        --no-comments or /no-comments: Suppress comment output
+        --precision=X or /precision=X: Set coordinate precision (default 3)
+        --workpiece-length=X: Workpiece length in mm
+        --workpiece-width=Y: Workpiece width in mm
+        --workpiece-thickness=Z: Workpiece thickness in mm
+        --use-part-name or /use-part-name: Name file after part/body name
+        --g54 or /g54: Set coordinate system offset (legacy flag)
+        --log or /log: Enable verbose logging
+    """
+    global OUTPUT_COMMENTS, PRECISION
+    global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS, USE_PART_NAME
+    global COORDINATE_SYSTEM, ENABLE_VERBOSE_LOGGING
+    
+    if not argstring:
+        return
+    
+    args = argstring.split()
+    for arg in args:
+        # Normalize argument to handle both -- and / formats
+        normalized_arg = arg.lstrip('-').lstrip('/')
+        
+        if arg == '--no-comments' or normalized_arg == 'no-comments':
+            OUTPUT_COMMENTS = False
+        elif arg == '--use-part-name' or normalized_arg == 'use-part-name':
+            USE_PART_NAME = True
+        elif arg.startswith('--precision=') or normalized_arg.startswith('precision='):
+            value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
+            PRECISION = int(value)
+        elif arg.startswith('--workpiece-length=') or normalized_arg.startswith('workpiece-length='):
+            value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
+            WORKPIECE_LENGTH = float(value)
+        elif arg.startswith('--workpiece-width=') or normalized_arg.startswith('workpiece-width='):
+            value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
+            WORKPIECE_WIDTH = float(value)
+        elif arg.startswith('--workpiece-thickness=') or normalized_arg.startswith('workpiece-thickness='):
+            value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
+            WORKPIECE_THICKNESS = float(value)
+        elif arg in ['--g54', '--G54'] or normalized_arg.lower() == 'g54':
+            # Legacy flag support - will be overridden by Job.Fixtures if present
+            COORDINATE_SYSTEM = 'G54'
+            debug_log(f"[WoodWOP DEBUG] Coordinate system set to G54 via {arg} flag (legacy mode)")
+        elif arg == '--log' or normalized_arg == 'log':
+            ENABLE_VERBOSE_LOGGING = True
+            print(f"[WoodWOP] Verbose logging enabled via {arg} flag")
+            # Update global variable
+            import sys
+            current_module = sys.modules.get(__name__)
+            if current_module:
+                current_module.ENABLE_VERBOSE_LOGGING = True
+
+
+def collect_contours(objectslist):
+    """Process all path objects to extract contours and operations.
+    
+    Args:
+        objectslist: List of FreeCAD Path objects to process
+    
+    This function populates global variables:
+        - contours: List of contour dictionaries
+        - operations: List of operation dictionaries
+        - tools_used: Set of tool numbers used
+        - contour_counter: Counter for contour IDs
+    """
+    global contour_counter, contours, operations, tools_used
+    
+    # Reset globals
+    contour_counter = 1
+    contours = []
+    operations = []
+    tools_used = set()
+    
+    # Process all path objects to extract contours and operations
+    for obj in objectslist:
+        print(f"[WoodWOP DEBUG] Processing object: {obj.Label if hasattr(obj, 'Label') else 'Unknown'}")
+        if not hasattr(obj, "Path"):
+            print(f"[WoodWOP DEBUG] Object has no Path attribute, skipping")
+            continue
+
+        # Check if Path has commands
+        try:
+            path_commands = PathUtils.getPathWithPlacement(obj).Commands
+            print(f"[WoodWOP DEBUG] Found {len(path_commands)} commands in Path")
+        except Exception as e:
+            print(f"[WoodWOP DEBUG] Error getting commands: {e}")
+            if hasattr(obj, 'Path') and hasattr(obj.Path, 'Commands'):
+                path_commands = obj.Path.Commands
+                print(f"[WoodWOP DEBUG] Using direct Path.Commands: {len(path_commands)} commands")
+            else:
+                print(f"[WoodWOP DEBUG] No commands found, skipping object")
+                continue
+
+        if not path_commands:
+            print(f"[WoodWOP DEBUG] Path has no commands, skipping")
+            continue
+
+        process_path_object(obj)
+
+
 def export(objectslist, filename, argstring):
     """Main export function called by FreeCAD.
     
@@ -161,40 +266,7 @@ def export(objectslist, filename, argstring):
     tools_used = set()
 
     # Parse arguments
-    if argstring:
-        args = argstring.split()
-        for arg in args:
-            # Normalize argument to handle both -- and / formats
-            normalized_arg = arg.lstrip('-').lstrip('/')
-            
-            if arg == '--no-comments' or normalized_arg == 'no-comments':
-                OUTPUT_COMMENTS = False
-            elif arg == '--use-part-name' or normalized_arg == 'use-part-name':
-                USE_PART_NAME = True
-            elif arg.startswith('--precision=') or normalized_arg.startswith('precision='):
-                value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
-                PRECISION = int(value)
-            elif arg.startswith('--workpiece-length=') or normalized_arg.startswith('workpiece-length='):
-                value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
-                WORKPIECE_LENGTH = float(value)
-            elif arg.startswith('--workpiece-width=') or normalized_arg.startswith('workpiece-width='):
-                value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
-                WORKPIECE_WIDTH = float(value)
-            elif arg.startswith('--workpiece-thickness=') or normalized_arg.startswith('workpiece-thickness='):
-                value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
-                WORKPIECE_THICKNESS = float(value)
-            elif arg in ['--g54', '--G54'] or normalized_arg.lower() == 'g54':
-                # Legacy flag support - will be overridden by Job.Fixtures if present
-                COORDINATE_SYSTEM = 'G54'
-                debug_log(f"[WoodWOP DEBUG] Coordinate system set to G54 via {arg} flag (legacy mode)")
-            elif arg == '--log' or normalized_arg == 'log':
-                ENABLE_VERBOSE_LOGGING = True
-                print(f"[WoodWOP] Verbose logging enabled via {arg} flag")
-                # Update global variable
-                import sys
-                current_module = sys.modules.get(__name__)
-                if current_module:
-                    current_module.ENABLE_VERBOSE_LOGGING = True
+    parse_arguments(argstring)
 
     # Get Job and extract base filename from settings or part name
     job = None
@@ -528,31 +600,8 @@ def export(objectslist, filename, argstring):
     if WORKPIECE_THICKNESS is None:
         WORKPIECE_THICKNESS = 20.0
 
-    # Process all path objects to extract contours and operations
-    for obj in objectslist:
-        print(f"[WoodWOP DEBUG] Processing object: {obj.Label if hasattr(obj, 'Label') else 'Unknown'}")
-        if not hasattr(obj, "Path"):
-            print(f"[WoodWOP DEBUG] Object has no Path attribute, skipping")
-            continue
-
-        # Check if Path has commands
-        try:
-            path_commands = PathUtils.getPathWithPlacement(obj).Commands
-            print(f"[WoodWOP DEBUG] Found {len(path_commands)} commands in Path")
-        except Exception as e:
-            print(f"[WoodWOP DEBUG] Error getting commands: {e}")
-            if hasattr(obj, 'Path') and hasattr(obj.Path, 'Commands'):
-                path_commands = obj.Path.Commands
-                print(f"[WoodWOP DEBUG] Using direct Path.Commands: {len(path_commands)} commands")
-            else:
-                print(f"[WoodWOP DEBUG] No commands found, skipping object")
-                continue
-
-        if not path_commands:
-            print(f"[WoodWOP DEBUG] Path has no commands, skipping")
-            continue
-
-        process_path_object(obj)
+    # Collect contours and operations from path objects
+    collect_contours(objectslist)
 
     # Generate MPR content
     print(f"[WoodWOP DEBUG] Generating MPR content...")
@@ -987,15 +1036,8 @@ def extract_contour_from_path(obj):
                 radius = math.sqrt(i*i + j*j) if (i != 0 or j != 0) else 0
 
                 # Discretize arc into line segments
-                # Calculate start and end angles
-                start_angle = math.atan2(current_y - center_y, current_x - center_x)
-                end_angle = math.atan2(y - center_y, x - center_x)
-
-                # Normalize angles
-                if direction == 'CCW' and end_angle < start_angle:
-                    end_angle += 2 * math.pi
-                elif direction == 'CW' and end_angle > start_angle:
-                    end_angle -= 2 * math.pi
+                # Calculate and normalize arc angles using helper function
+                start_angle, end_angle = calculate_arc_angles(current_x, current_y, center_x, center_y, x, y, direction)
 
                 # Number of segments (more segments = smoother curve)
                 num_segments = max(8, int(abs(end_angle - start_angle) * 180 / math.pi / 5))  # ~5 degrees per segment
@@ -1023,14 +1065,8 @@ def extract_contour_from_path(obj):
 
                 # Calculate intermediate point for three-point arc format (X2, Y2)
                 # Use midpoint of arc as intermediate point
-                start_angle = math.atan2(current_y - center_y, current_x - center_x)
-                end_angle = math.atan2(y - center_y, x - center_x)
-                
-                # Normalize angles for direction
-                if direction == 'CCW' and end_angle < start_angle:
-                    end_angle += 2 * math.pi
-                elif direction == 'CW' and end_angle > start_angle:
-                    end_angle -= 2 * math.pi
+                # Calculate and normalize arc angles using helper function
+                start_angle, end_angle = calculate_arc_angles(current_x, current_y, center_x, center_y, x, y, direction)
                 
                 mid_angle = (start_angle + end_angle) / 2
                 mid_x = center_x + radius * math.cos(mid_angle)
@@ -1277,6 +1313,36 @@ def generate_mpr_content():
     
     output = []
 
+    # Generate header
+    header_lines = generate_mpr_header()
+    output.extend(header_lines)
+    
+    # Generate contour elements
+    elements_lines = generate_mpr_elements()
+    output.extend(elements_lines)
+    
+    # Generate workpiece and variables section
+    workpiece_lines = generate_mpr_workpiece()
+    output.extend(workpiece_lines)
+    
+    # Generate operations
+    operations_lines = generate_mpr_operations()
+    output.extend(operations_lines)
+    
+    # End of file
+    output.append('!')
+    
+    # Return the complete MPR content as a string
+    return '\n'.join(output)
+
+
+def generate_mpr_header():
+    """Generate MPR file header section [H."""
+    global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
+    global STOCK_EXTENT_X, STOCK_EXTENT_Y
+    
+    output = []
+    
     # Data head [H - All parameters from empty.mpr
     output.append('[H')
     output.append('VERSION="4.0 Alpha"')
@@ -1346,7 +1412,16 @@ def generate_mpr_content():
     output.append(f'_RX={(WORKPIECE_LENGTH + 2 * STOCK_EXTENT_X):.6f}')
     output.append(f'_RY={(WORKPIECE_WIDTH + 2 * STOCK_EXTENT_Y):.6f}')
     output.append('')
+    
+    return output
 
+
+def generate_mpr_elements():
+    """Generate MPR contour elements section."""
+    global contours, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
+    
+    output = []
+    
     # Contour elements (WoodWOP format)
     for contour in contours:
         output.append(f']{contour["id"]}')
@@ -1400,22 +1475,8 @@ def generate_mpr_content():
                 prev_y = prev_elem_y
                 prev_z = prev_elem_z
                 
-                dx = elem_x - prev_x
-                dy = elem_y - prev_y
-                dz = z_value - prev_z
-                
-                # Calculate angle in X/Y plane (WI) - in radians
-                if abs(dx) > 0.001 or abs(dy) > 0.001:
-                    wi_angle = math.atan2(dy, dx)
-                else:
-                    wi_angle = 0.0
-                
-                # Calculate angle to X/Y plane (WZ) - in radians
-                line_length_xy = math.sqrt(dx*dx + dy*dy)
-                if line_length_xy > 0.001:
-                    wz_angle = math.atan2(dz, line_length_xy)
-                else:
-                    wz_angle = 0.0
+                # Calculate line angles using helper function
+                wi_angle, wz_angle = calculate_line_angles(prev_x, prev_y, prev_z, elem_x, elem_y, z_value)
                 
                 output.append(f'.X={fmt(elem_x)}')
                 output.append(f'.Y={fmt(elem_y)}')
@@ -1470,15 +1531,8 @@ def generate_mpr_content():
                 center_x = prev_x + elem.get('i', 0)
                 center_y = prev_y + elem.get('j', 0)
                 
-                # Calculate angles in X/Y plane
-                start_angle = math.atan2(prev_y - center_y, prev_x - center_x)
-                end_angle = math.atan2(elem_y - center_y, elem_x - center_x)
-                
-                # Normalize angles for direction
-                if direction == 'CCW' and end_angle < start_angle:
-                    end_angle += 2 * math.pi
-                elif direction == 'CW' and end_angle > start_angle:
-                    end_angle -= 2 * math.pi
+                # Calculate and normalize arc angles using helper function
+                start_angle, end_angle = calculate_arc_angles(prev_x, prev_y, center_x, center_y, elem_x, elem_y, direction)
                 
                 # WAZ (angle to X/Y plane on arc path) - 0 for arcs in XY plane
                 waz_angle = 0.0
@@ -1502,7 +1556,18 @@ def generate_mpr_content():
             output.append('')
 
         output.append('')
+    
+    return output
 
+
+def generate_mpr_workpiece():
+    """Generate MPR workpiece and variables section."""
+    global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
+    global STOCK_EXTENT_X, STOCK_EXTENT_Y, OUTPUT_COMMENTS, PRECISION, now
+    global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
+    
+    output = []
+    
     # Variable section [001 (REQUIRED for WoodWOP) - always generate even if no contours
     output.append('[001')
     output.append(f'l="{fmt(WORKPIECE_LENGTH)}"')
@@ -1536,7 +1601,16 @@ def generate_mpr_content():
             output.append(f'KM="Coordinate System: {COORDINATE_SYSTEM} (offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={COORDINATE_OFFSET_Z:.3f})"')
             output.append(f'KM="NOTE: G-code output is NOT affected by coordinate system offset"')
         output.append('')
+    
+    return output
 
+
+def generate_mpr_operations():
+    """Generate MPR operations section."""
+    global operations, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y
+    
+    output = []
+    
     # Operations
     for op in operations:
         if op['type'] == 'BohrVert':
@@ -1570,12 +1644,267 @@ def generate_mpr_content():
             output.append(f'EA="{op["contour"]}:0"')
             output.append(f'TNO="{op["tool"]}"')
             output.append('')
+    
+    return output
 
+
+def calculate_line_angles(prev_x, prev_y, prev_z, elem_x, elem_y, z_value):
+    """Calculate angles for a line element.
+    
+    Args:
+        prev_x, prev_y, prev_z: Previous point coordinates
+        elem_x, elem_y, z_value: Current point coordinates
+    
+    Returns:
+        tuple: (wi_angle, wz_angle) - angles in radians
+            wi_angle: Angle in X/Y plane
+            wz_angle: Angle to X/Y plane
+    """
+    dx = elem_x - prev_x
+    dy = elem_y - prev_y
+    dz = z_value - prev_z
+    
+    # Calculate angle in X/Y plane (WI) - in radians
+    if abs(dx) > 0.001 or abs(dy) > 0.001:
+        wi_angle = math.atan2(dy, dx)
+    else:
+        wi_angle = 0.0
+    
+    # Calculate angle to X/Y plane (WZ) - in radians
+    line_length_xy = math.sqrt(dx*dx + dy*dy)
+    if line_length_xy > 0.001:
+        wz_angle = math.atan2(dz, line_length_xy)
+    else:
+        wz_angle = 0.0
+    
+    return (wi_angle, wz_angle)
+
+
+def calculate_arc_angles(prev_x, prev_y, center_x, center_y, elem_x, elem_y, direction):
+    """Calculate and normalize angles for an arc element.
+    
+    Args:
+        prev_x, prev_y: Previous point coordinates (arc start)
+        center_x, center_y: Arc center coordinates
+        elem_x, elem_y: Current point coordinates (arc end)
+        direction: 'CW' or 'CCW'
+    
+    Returns:
+        tuple: (start_angle, end_angle) - angles in radians (normalized)
+    """
+    # Calculate angles in X/Y plane
+    start_angle = math.atan2(prev_y - center_y, prev_x - center_x)
+    end_angle = math.atan2(elem_y - center_y, elem_x - center_x)
+    
+    # Normalize angles for direction
+    if direction == 'CCW' and end_angle < start_angle:
+        end_angle += 2 * math.pi
+    elif direction == 'CW' and end_angle > start_angle:
+        end_angle -= 2 * math.pi
+    
+    return (start_angle, end_angle)
+
+
+def generate_mpr_content():
+    """Generate complete MPR format content and return as string.
+    
+    NOTE: If COORDINATE_SYSTEM is set (G54, G55, etc.), coordinates will be offset
+    by the minimum part coordinates. This offset is applied ONLY to MPR format.
+    G-code generation is NOT affected and remains unchanged.
+    """
+    output = []
+
+    # Generate header
+    header_lines = generate_mpr_header()
+    output.extend(header_lines)
+    
+    # Generate contour elements
+    elements_lines = generate_mpr_elements()
+    output.extend(elements_lines)
+    
+    # Generate workpiece and variables section
+    workpiece_lines = generate_mpr_workpiece()
+    output.extend(workpiece_lines)
+    
+    # Generate operations
+    operations_lines = generate_mpr_operations()
+    output.extend(operations_lines)
+    
     # End of file
     output.append('!')
-
+    
     # Return the complete MPR content as a string
     return '\n'.join(output)
+
+
+def generate_mpr_header():
+    """Generate MPR file header section [H."""
+    global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
+    global STOCK_EXTENT_X, STOCK_EXTENT_Y
+    
+    output = []
+    
+    # Data head [H - All parameters from empty.mpr
+    output.append('[H')
+    output.append('VERSION="4.0 Alpha"')
+    output.append('WW="9.0.152"')
+    output.append('OP="1"')
+    output.append('WRK2="0"')
+    output.append('SCHN="0"')
+    output.append('CVR="0"')
+    output.append('POI="0"')
+    output.append('HSP="0"')
+    output.append('O2="0"')
+    output.append('O4="0"')
+    output.append('O3="0"')
+    output.append('O5="0"')
+    output.append('SR="0"')
+    output.append('FM="1"')
+    output.append('ML="2000"')
+    output.append('UF="20"')
+    output.append('ZS="20"')
+    output.append('DN="STANDARD"')
+    output.append('DST="0"')
+    output.append('GP="0"')
+    output.append('GY="0"')
+    output.append('GXY="0"')
+    output.append('NP="1"')
+    output.append('NE="0"')
+    output.append('NA="0"')
+    output.append('BFS="0"')
+    output.append('US="0"')
+    output.append('CB="0"')
+    output.append('UP="0"')
+    output.append('DW="0"')
+    output.append('MAT="HOMAG"')
+    output.append('HP_A_O="STANDARD"')
+    output.append('OVD_U="1"')
+    output.append('OVD="0"')
+    output.append('OHD_U="0"')
+    output.append('OHD="2"')
+    output.append('OOMD_U="0"')
+    output.append('EWL="1"')
+    output.append('INCH="0"')
+    output.append('VIEW="NOMIRROR"')
+    output.append('ANZ="1"')
+    output.append('BES="0"')
+    output.append('ENT="0"')
+    output.append('MATERIAL=""')
+    output.append('CUSTOMER=""')
+    output.append('ORDER=""')
+    output.append('ARTICLE=""')
+    output.append('PARTID=""')
+    output.append('PARTTYPE=""')
+    output.append('MPRCOUNT="1"')
+    output.append('MPRNUMBER="1"')
+    output.append('INFO1=""')
+    output.append('INFO2=""')
+    output.append('INFO3=""')
+    output.append('INFO4=""')
+    output.append('INFO5=""')
+    output.append(f'_BSX={WORKPIECE_LENGTH:.6f}')
+    output.append(f'_BSY={WORKPIECE_WIDTH:.6f}')
+    output.append(f'_BSZ={WORKPIECE_THICKNESS:.6f}')
+    output.append(f'_FNX={STOCK_EXTENT_X:.6f}')
+    output.append(f'_FNY={STOCK_EXTENT_Y:.6f}')
+    output.append('_RNX=0.000000')
+    output.append('_RNY=0.000000')
+    output.append('_RNZ=0.000000')
+    output.append(f'_RX={(WORKPIECE_LENGTH + 2 * STOCK_EXTENT_X):.6f}')
+    output.append(f'_RY={(WORKPIECE_WIDTH + 2 * STOCK_EXTENT_Y):.6f}')
+    output.append('')
+    
+    return output
+
+
+
+
+def generate_mpr_workpiece():
+    """Generate MPR workpiece and variables section."""
+    global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
+    global STOCK_EXTENT_X, STOCK_EXTENT_Y, OUTPUT_COMMENTS, PRECISION, now
+    global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
+    
+    output = []
+    
+    # Variable section [001 (REQUIRED for WoodWOP) - always generate even if no contours
+    output.append('[001')
+    output.append(f'l="{fmt(WORKPIECE_LENGTH)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="Länge in X"')
+    output.append(f'w="{fmt(WORKPIECE_WIDTH)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="Breite in Y"')
+    output.append(f'th="{fmt(WORKPIECE_THICKNESS)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="Dicke in Z"')
+    output.append('')
+
+    # Workpiece definition
+    output.append(f'<100 \\WerkStck\\')
+    output.append(f'LA="l"')  # Use variable reference
+    output.append(f'BR="w"')  # Use variable reference
+    output.append(f'DI="th"')  # Use variable reference
+    output.append(f'FNX="{fmt(STOCK_EXTENT_X)}"')  # Front Null X from stock
+    output.append(f'FNY="{fmt(STOCK_EXTENT_Y)}"')  # Front Null Y from stock
+    output.append(f'AX="0"')
+    output.append(f'AY="0"')
+    output.append('')
+
+    # Comment
+    if OUTPUT_COMMENTS:
+        output.append('<101 \\Comment\\')
+        output.append(f'KM="Generated by FreeCAD WoodWOP Post Processor"')
+        output.append(f'KM="Date: {now.strftime("%Y-%m-%d %H:%M:%S")}"')
+        if COORDINATE_SYSTEM:
+            output.append(f'KM="Coordinate System: {COORDINATE_SYSTEM} (offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={COORDINATE_OFFSET_Z:.3f})"')
+            output.append(f'KM="NOTE: G-code output is NOT affected by coordinate system offset"')
+        output.append('')
+    
+    return output
+
+
+def generate_mpr_operations():
+    """Generate MPR operations section."""
+    global operations, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y
+    
+    output = []
+    
+    # Operations
+    for op in operations:
+        if op['type'] == 'BohrVert':
+            # Apply coordinate offset if G54 or other coordinate system is set
+            xa = op['xa'] + COORDINATE_OFFSET_X
+            ya = op['ya'] + COORDINATE_OFFSET_Y
+            
+            output.append(f'<{op["id"]} \\BohrVert\\')
+            output.append(f'XA="{fmt(xa)}"')
+            output.append(f'YA="{fmt(ya)}"')
+            output.append(f'TI="{fmt(op["depth"])}"')
+            output.append(f'TNO="{op["tool"]}"')
+            output.append(f'BM="SS"')
+            output.append('')
+
+        elif op['type'] == 'Contourfraesen':
+            output.append(f'<{op["id"]} \\Contourfraesen\\')
+            output.append(f'EA="{op["contour"]}:0"')
+            output.append(f'MDA="TAN"')
+            output.append(f'RK="WRKL"')
+            output.append(f'EE="{op["contour"]}:1"')
+            output.append(f'MDE="TAN_AB"')
+            output.append(f'EM="1"')
+            output.append(f'RI="1"')
+            output.append(f'TNO="{op["tool"]}"')
+            output.append(f'SM="0"')
+            output.append('')
+
+        elif op['type'] == 'Pocket':
+            output.append(f'<{op["id"]} \\Pocket\\')
+            output.append(f'EA="{op["contour"]}:0"')
+            output.append(f'TNO="{op["tool"]}"')
+            output.append('')
+    
+    return output
 
 
 def fmt(value):
