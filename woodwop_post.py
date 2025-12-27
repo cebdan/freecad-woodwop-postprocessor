@@ -192,24 +192,6 @@ def export(objectslist, filename, argstring):
     ENABLE_G0_START = False  # Reset to default (no G0 at start)
     LAST_G0_POSITION = None  # Reset last G0 position
     
-    # Define log_verbose function (must be defined after ENABLE_VERBOSE_LOGGING is declared as global)
-    def log_verbose(message, level="INFO"):
-        """Output log message if verbose logging is enabled"""
-        if ENABLE_VERBOSE_LOGGING:
-            try:
-                import FreeCAD
-                if level == "DEBUG":
-                    FreeCAD.Console.PrintLog(f"[WoodWOP VERBOSE] {message}\n")
-                elif level == "WARNING":
-                    FreeCAD.Console.PrintWarning(f"[WoodWOP VERBOSE] {message}\n")
-                elif level == "ERROR":
-                    FreeCAD.Console.PrintError(f"[WoodWOP VERBOSE] {message}\n")
-                else:
-                    FreeCAD.Console.PrintMessage(f"[WoodWOP VERBOSE] {message}\n")
-            except:
-                pass
-            print(f"[WoodWOP VERBOSE] {message}")
-
     # Parse arguments
     # New format: /key or /key=value (Windows-style)
     # Old format: --key or --key=value (legacy, still supported)
@@ -244,12 +226,27 @@ def export(objectslist, filename, argstring):
                 print(f"[WoodWOP DEBUG] NC file output enabled via /nc flag")
             elif key == 'log':
                 ENABLE_VERBOSE_LOGGING = True
+                # Also set as module attribute
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.ENABLE_VERBOSE_LOGGING = True
                 print(f"[WoodWOP DEBUG] Verbose logging enabled via /log flag")
             elif key == 'report':
                 ENABLE_JOB_REPORT = True
+                # Also set as module attribute
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.ENABLE_JOB_REPORT = True
                 print(f"[WoodWOP DEBUG] Job report enabled via /report flag")
             elif key in ['p_c', 'p-c']:
                 ENABLE_PATH_COMMANDS_EXPORT = True
+                # Also set as module attribute
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.ENABLE_PATH_COMMANDS_EXPORT = True
                 print(f"[WoodWOP DEBUG] Path Commands export enabled via /p_c flag")
             elif key in ['z_part', 'z-part']:
                 USE_Z_FROM_JOB = True
@@ -269,6 +266,14 @@ def export(objectslist, filename, argstring):
                 # Legacy flag support - will be overridden by Job.Fixtures if present
                 COORDINATE_SYSTEM = 'G54'
                 print(f"[WoodWOP DEBUG] Coordinate system set to G54 via /g54 flag (legacy mode)")
+    
+    # Update module attributes after parsing arguments so Command.py can read them
+    import sys
+    current_module = sys.modules.get(__name__)
+    if current_module:
+        current_module.ENABLE_VERBOSE_LOGGING = ENABLE_VERBOSE_LOGGING
+        current_module.ENABLE_JOB_REPORT = ENABLE_JOB_REPORT
+        current_module.ENABLE_PATH_COMMANDS_EXPORT = ENABLE_PATH_COMMANDS_EXPORT
     
     # Define log_verbose function (must be defined after ENABLE_VERBOSE_LOGGING is declared as global and parsed)
     def log_verbose(message, level="INFO"):
