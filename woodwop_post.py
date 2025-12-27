@@ -20,46 +20,21 @@ If auto-rename fails, manually rename .nc to .mpr
 '''
 
 TOOLTIP_ARGS = '''
-Arguments format: /key or /key=value (space-separated)
-
-/no-comments: Suppress comment output
-/nc: Enable NC (G-code) file output alongside MPR file
-  If not specified, only MPR file will be created (NC file will not appear in dialog)
-  If specified, both MPR and NC files will be created
-/log: Enable verbose logging to file and terminal
-  If specified, detailed debug information will be written to log file and console
-/report: Enable job properties report generation
-  If specified, a detailed job report will be created after file generation
-  /p_c or /p-c: Export all Path Commands from all operations to a text file
-  If specified, a file with all Path Commands will be created for debugging
-  /z_part or /z-part: Use Z coordinates from Job without offset correction
-  If specified, Z coordinates will not be adjusted by coordinate system offset
-  /g0_start or /G0_start: Include G0 rapid movement at the start of contours
-  If specified, G0 movement will be added to the beginning of each contour
-  The last G0 position before first G1/G2/G3 will be used as the rapid move start
-/precision=X: Set coordinate precision (default 3)
-/workpiece-length=X: Workpiece length in mm (default: auto-detect)
-/workpiece-width=Y: Workpiece width in mm (default: auto-detect)
-/workpiece-thickness=Z: Workpiece thickness in mm (default: auto-detect)
-/use-part-name: Name .mpr file after the part/body name instead of document name
-/g54: Set coordinate system offset to minimum part coordinates (legacy flag)
+--no-comments: Suppress comment output
+--precision=X: Set coordinate precision (default 3)
+--workpiece-length=X: Workpiece length in mm (default: auto-detect)
+--workpiece-width=Y: Workpiece width in mm (default: auto-detect)
+--workpiece-thickness=Z: Workpiece thickness in mm (default: auto-detect)
+--use-part-name: Name .mpr file after the part/body name instead of document name
+--g54: Set coordinate system offset to minimum part coordinates (legacy flag)
   When set, MPR coordinates will be offset by minimum part coordinates (X, Y, Z).
   Origin (0,0,0) will be at the minimum point of the part.
   NOTE: G-code output is NOT affected and remains unchanged.
   PREFERRED: Use Work Coordinate Systems (Fixtures) in Job settings instead of this flag.
   If G54 is checked in Job settings, it will automatically be used.
-
-Examples:
-  /no-comments /precision=4
-  /workpiece-length=800 /workpiece-width=600 /workpiece-thickness=20
-  /g54 /no-comments
-  /nc /no-comments (output both MPR and NC files)
-  /log /report (enable verbose logging and job report)
-  /p_c /nc /log /report (export Path Commands, output both files, enable verbose logging and job report)
-  /z_part /g54 (use Z from Job, apply G54 offset only to X and Y)
-  /g0_start (include G0 rapid movement at contour start)
-
-Note: Old format (--key) is still supported for backward compatibility.
+--log or /log: Enable verbose logging (detailed debug output)
+  When set, detailed debug information will be printed to console and log file.
+  If not set, only critical errors and warnings are shown.
 '''
 
 # File extension for WoodWOP MPR files
@@ -79,12 +54,6 @@ WORKPIECE_THICKNESS = None
 STOCK_EXTENT_X = 0.0
 STOCK_EXTENT_Y = 0.0
 USE_PART_NAME = False
-OUTPUT_NC_FILE = False  # If True, output NC file alongside MPR file
-ENABLE_VERBOSE_LOGGING = False  # If True, output detailed logs to file/terminal
-ENABLE_JOB_REPORT = False  # If True, create job properties report
-USE_Z_FROM_JOB = False  # If True, use Z coordinates from Job without offset correction
-ENABLE_G0_START = False  # If True, include G0 rapid movement at the start of contours
-LAST_G0_POSITION = None  # Last G0 position (x, y, z) before first G1/G2/G3
 
 # Coordinate system offset (for G54, G55, etc.)
 # If set, coordinates will be offset by the minimum part coordinates
@@ -94,11 +63,25 @@ COORDINATE_OFFSET_X = 0.0
 COORDINATE_OFFSET_Y = 0.0
 COORDINATE_OFFSET_Z = 0.0
 
+# Verbose logging flag
+ENABLE_VERBOSE_LOGGING = False  # Set to True via /log or --log flag
+
 # Tracking
 contour_counter = 1
 contours = []
 operations = []
 tools_used = set()
+
+
+def debug_log(message):
+    """Print debug message only if verbose logging is enabled."""
+    if ENABLE_VERBOSE_LOGGING:
+        print(message)
+        try:
+            import FreeCAD
+            FreeCAD.Console.PrintMessage(message + "\n")
+        except:
+            pass
 
 
 def export(objectslist, filename, argstring):
@@ -116,44 +99,36 @@ def export(objectslist, filename, argstring):
     import sys
     import traceback
     
-    # Debug output - use both print() and FreeCAD.Console to ensure visibility
-    try:
-        import FreeCAD
-        FreeCAD.Console.PrintMessage("[WoodWOP DEBUG] ===== export() called =====\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] File: {__file__}\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] objectslist type: {type(objectslist)}, length: {len(objectslist) if hasattr(objectslist, '__len__') else 'N/A'}\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] filename: {filename}\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] argstring: {argstring}\n")
-    except Exception as e:
-        print(f"[WoodWOP ERROR] Failed to print to FreeCAD console: {e}")
-    
-    print(f"[WoodWOP DEBUG] ===== export() called =====")
-    print(f"[WoodWOP DEBUG] File: {__file__}")
-    print(f"[WoodWOP DEBUG] objectslist type: {type(objectslist)}, length: {len(objectslist) if hasattr(objectslist, '__len__') else 'N/A'}")
-    print(f"[WoodWOP DEBUG] filename: {filename}")
-    print(f"[WoodWOP DEBUG] argstring: {argstring}")
-    print(f"[WoodWOP DEBUG] Files will be created automatically based on Model/part name from Job")
-    
     global OUTPUT_COMMENTS, PRECISION
     global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS, USE_PART_NAME
-    global STOCK_EXTENT_X, STOCK_EXTENT_Y, OUTPUT_NC_FILE
-    global ENABLE_VERBOSE_LOGGING, ENABLE_JOB_REPORT, ENABLE_PATH_COMMANDS_EXPORT
-    global USE_Z_FROM_JOB, ENABLE_G0_START, LAST_G0_POSITION
+    global STOCK_EXTENT_X, STOCK_EXTENT_Y
     global contour_counter, contours, operations, tools_used
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
+    global ENABLE_VERBOSE_LOGGING
+    
+    # Reset verbose logging flag
+    ENABLE_VERBOSE_LOGGING = False
+    
+    # Debug output - use both print() and FreeCAD.Console to ensure visibility
+    debug_log("[WoodWOP DEBUG] ===== export() called =====")
+    debug_log(f"[WoodWOP DEBUG] File: {__file__}")
+    debug_log(f"[WoodWOP DEBUG] objectslist type: {type(objectslist)}, length: {len(objectslist) if hasattr(objectslist, '__len__') else 'N/A'}")
+    debug_log(f"[WoodWOP DEBUG] filename: {filename}")
+    debug_log(f"[WoodWOP DEBUG] argstring: {argstring}")
+    debug_log("[WoodWOP DEBUG] Files will be created automatically based on Model/part name from Job")
 
     # Try to get actual output file from Job
     actual_output_file = None
     if filename == '-':
         # FreeCAD is using stdout mode, try to get the real filename from Job
-        print(f"[WoodWOP DEBUG] Searching for output filename...")
+        debug_log("[WoodWOP DEBUG] Searching for output filename...")
 
         # Method 1: Check objectslist for Job with PostProcessorOutputFile
         for obj in objectslist:
-            print(f"[WoodWOP DEBUG] Checking object: {obj.Label if hasattr(obj, 'Label') else 'Unknown'}, type: {type(obj).__name__}")
+            debug_log(f"[WoodWOP DEBUG] Checking object: {obj.Label if hasattr(obj, 'Label') else 'Unknown'}, type: {type(obj).__name__}")
             if hasattr(obj, 'PostProcessorOutputFile'):
                 actual_output_file = obj.PostProcessorOutputFile
-                print(f"[WoodWOP DEBUG] Found PostProcessorOutputFile: {actual_output_file}")
+                debug_log(f"[WoodWOP DEBUG] Found PostProcessorOutputFile: {actual_output_file}")
                 break
 
         # Method 2: Try to get from FreeCAD Active Document
@@ -167,134 +142,59 @@ def export(objectslist, filename, argstring):
                         if hasattr(obj, 'Proxy') and 'Job' in str(type(obj.Proxy)):
                             if hasattr(obj, 'PostProcessorOutputFile'):
                                 actual_output_file = obj.PostProcessorOutputFile
-                                print(f"[WoodWOP DEBUG] Found Job output file: {actual_output_file}")
+                                debug_log(f"[WoodWOP DEBUG] Found Job output file: {actual_output_file}")
 
                                 # If empty, use a hook to find the file after FreeCAD creates it
                                 if not actual_output_file:
                                     # We'll create the .mpr file after FreeCAD writes the .nc file
                                     # by monitoring the file system
                                     actual_output_file = "AUTO_DETECT"
-                                    print(f"[WoodWOP DEBUG] Will auto-detect output file")
+                                    debug_log("[WoodWOP DEBUG] Will auto-detect output file")
                                 break
             except Exception as e:
-                print(f"[WoodWOP DEBUG] Could not access ActiveDocument: {e}")
+                debug_log(f"[WoodWOP DEBUG] Could not access ActiveDocument: {e}")
 
     # Reset globals
     contour_counter = 1
     contours = []
     operations = []
     tools_used = set()
-    OUTPUT_NC_FILE = False  # Reset to default (no NC file output)
-    ENABLE_VERBOSE_LOGGING = False  # Reset to default (standard logging)
-    ENABLE_JOB_REPORT = False  # Reset to default (no report)
-    ENABLE_PATH_COMMANDS_EXPORT = False  # Reset to default (no Path Commands export)
-    USE_Z_FROM_JOB = False  # Reset to default (apply Z offset correction)
-    ENABLE_G0_START = False  # Reset to default (no G0 at start)
-    LAST_G0_POSITION = None  # Reset last G0 position
-    
+
     # Parse arguments
-    # New format: /key or /key=value (Windows-style)
-    # Old format: --key or --key=value (legacy, still supported)
     if argstring:
         args = argstring.split()
         for arg in args:
-            # Support both new format (/key) and old format (--key) for backward compatibility
-            if arg.startswith('/'):
-                # New format: /key or /key=value
-                arg_key = arg[1:]  # Remove leading '/'
-            elif arg.startswith('--'):
-                # Old format: --key or --key=value (legacy)
-                arg_key = arg[2:]  # Remove leading '--'
-            else:
-                # Skip arguments that don't start with / or --
-                continue
+            # Normalize argument to handle both -- and / formats
+            normalized_arg = arg.lstrip('-').lstrip('/')
             
-            # Parse key=value or just key
-            if '=' in arg_key:
-                key, value = arg_key.split('=', 1)
-            else:
-                key = arg_key
-                value = None
-            
-            # Process arguments
-            if key == 'no-comments':
+            if arg == '--no-comments' or normalized_arg == 'no-comments':
                 OUTPUT_COMMENTS = False
-            elif key == 'use-part-name':
+            elif arg == '--use-part-name' or normalized_arg == 'use-part-name':
                 USE_PART_NAME = True
-            elif key == 'nc':
-                OUTPUT_NC_FILE = True
-                print(f"[WoodWOP DEBUG] NC file output enabled via /nc flag")
-            elif key == 'log':
+            elif arg.startswith('--precision=') or normalized_arg.startswith('precision='):
+                value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
+                PRECISION = int(value)
+            elif arg.startswith('--workpiece-length=') or normalized_arg.startswith('workpiece-length='):
+                value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
+                WORKPIECE_LENGTH = float(value)
+            elif arg.startswith('--workpiece-width=') or normalized_arg.startswith('workpiece-width='):
+                value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
+                WORKPIECE_WIDTH = float(value)
+            elif arg.startswith('--workpiece-thickness=') or normalized_arg.startswith('workpiece-thickness='):
+                value = arg.split('=')[1] if '=' in arg else normalized_arg.split('=')[1]
+                WORKPIECE_THICKNESS = float(value)
+            elif arg in ['--g54', '--G54'] or normalized_arg.lower() == 'g54':
+                # Legacy flag support - will be overridden by Job.Fixtures if present
+                COORDINATE_SYSTEM = 'G54'
+                debug_log(f"[WoodWOP DEBUG] Coordinate system set to G54 via {arg} flag (legacy mode)")
+            elif arg == '--log' or normalized_arg == 'log':
                 ENABLE_VERBOSE_LOGGING = True
-                # Also set as module attribute
+                print(f"[WoodWOP] Verbose logging enabled via {arg} flag")
+                # Update global variable
                 import sys
                 current_module = sys.modules.get(__name__)
                 if current_module:
                     current_module.ENABLE_VERBOSE_LOGGING = True
-                print(f"[WoodWOP DEBUG] Verbose logging enabled via /log flag")
-            elif key == 'report':
-                ENABLE_JOB_REPORT = True
-                # Also set as module attribute
-                import sys
-                current_module = sys.modules.get(__name__)
-                if current_module:
-                    current_module.ENABLE_JOB_REPORT = True
-                print(f"[WoodWOP DEBUG] Job report enabled via /report flag")
-            elif key in ['p_c', 'p-c']:
-                ENABLE_PATH_COMMANDS_EXPORT = True
-                # Also set as module attribute
-                import sys
-                current_module = sys.modules.get(__name__)
-                if current_module:
-                    current_module.ENABLE_PATH_COMMANDS_EXPORT = True
-                print(f"[WoodWOP DEBUG] Path Commands export enabled via /p_c flag")
-            elif key in ['z_part', 'z-part']:
-                USE_Z_FROM_JOB = True
-                print(f"[WoodWOP DEBUG] Using Z coordinates from Job without offset correction (via /z_part flag)")
-            elif key in ['g0_start', 'G0_start', 'g0-start', 'G0-start']:
-                ENABLE_G0_START = True
-                print(f"[WoodWOP DEBUG] G0 rapid movement at contour start enabled via /g0_start flag")
-            elif key == 'precision' and value:
-                PRECISION = int(value)
-            elif key == 'workpiece-length' and value:
-                WORKPIECE_LENGTH = float(value)
-            elif key == 'workpiece-width' and value:
-                WORKPIECE_WIDTH = float(value)
-            elif key == 'workpiece-thickness' and value:
-                WORKPIECE_THICKNESS = float(value)
-            elif key in ['g54', 'G54']:
-                # Legacy flag support - will be overridden by Job.Fixtures if present
-                COORDINATE_SYSTEM = 'G54'
-                print(f"[WoodWOP DEBUG] Coordinate system set to G54 via /g54 flag (legacy mode)")
-    
-    # Update module attributes after parsing arguments so Command.py can read them
-    import sys
-    current_module = sys.modules.get(__name__)
-    if current_module:
-        current_module.ENABLE_VERBOSE_LOGGING = ENABLE_VERBOSE_LOGGING
-        current_module.ENABLE_JOB_REPORT = ENABLE_JOB_REPORT
-        current_module.ENABLE_PATH_COMMANDS_EXPORT = ENABLE_PATH_COMMANDS_EXPORT
-    
-    # Define log_verbose function (must be defined after ENABLE_VERBOSE_LOGGING is declared as global and parsed)
-    def log_verbose(message, level="INFO"):
-        """Output log message if verbose logging is enabled"""
-        if ENABLE_VERBOSE_LOGGING:
-            try:
-                import FreeCAD
-                if level == "DEBUG":
-                    FreeCAD.Console.PrintLog(f"[WoodWOP VERBOSE] {message}\n")
-                elif level == "WARNING":
-                    FreeCAD.Console.PrintWarning(f"[WoodWOP VERBOSE] {message}\n")
-                elif level == "ERROR":
-                    FreeCAD.Console.PrintError(f"[WoodWOP VERBOSE] {message}\n")
-                else:
-                    FreeCAD.Console.PrintMessage(f"[WoodWOP VERBOSE] {message}\n")
-            except:
-                pass
-            print(f"[WoodWOP VERBOSE] {message}")
-    
-    if ENABLE_VERBOSE_LOGGING:
-        log_verbose(f"Verbose logging enabled. Detailed information will be logged.")
 
     # Get Job and extract base filename from settings or part name
     job = None
@@ -331,7 +231,7 @@ def export(objectslist, filename, argstring):
                     else:
                         print(f"[WoodWOP DEBUG] Fixtures list is empty - using project coordinate system")
                 else:
-                    print(f"[WoodWOP DEBUG] Fixtures property not found in Job - checking legacy /g54 flag")
+                    print(f"[WoodWOP DEBUG] Fixtures property not found in Job - checking legacy --g54 flag")
                 
                 # Try to get Model property from Job
                 if hasattr(obj, 'Model'):
@@ -434,7 +334,7 @@ def export(objectslist, filename, argstring):
                             else:
                                 print(f"[WoodWOP DEBUG] Fixtures list is empty - using project coordinate system")
                         else:
-                            print(f"[WoodWOP DEBUG] Fixtures property not found in ActiveDocument Job - checking legacy /g54 flag")
+                            print(f"[WoodWOP DEBUG] Fixtures property not found in ActiveDocument Job - checking legacy --g54 flag")
                         
                         # Try to get Model property from Job
                         if not job_model:
@@ -656,19 +556,9 @@ def export(objectslist, filename, argstring):
 
     # Generate MPR content
     print(f"[WoodWOP DEBUG] Generating MPR content...")
-    log_verbose(f"Starting MPR content generation...")
-    log_verbose(f"Contours found: {len(contours)}, Operations found: {len(operations)}")
     print(f"[WoodWOP DEBUG] Found {len(contours)} contours, {len(operations)} operations")
     print(f"[WoodWOP DEBUG] Contours: {[c['id'] for c in contours]}")
     print(f"[WoodWOP DEBUG] Operations: {[op['type'] for op in operations]}")
-    if ENABLE_VERBOSE_LOGGING:
-        log_verbose(f"Tools used: {sorted(tools_used)}")
-        log_verbose(f"Coordinate system: {COORDINATE_SYSTEM or 'None (using project coordinates)'}")
-        if COORDINATE_SYSTEM:
-            z_info = f"Z={COORDINATE_OFFSET_Z:.3f} (from Job)" if USE_Z_FROM_JOB else f"Z={COORDINATE_OFFSET_Z:.3f}"
-            log_verbose(f"Coordinate offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, {z_info}")
-        if USE_Z_FROM_JOB:
-            log_verbose(f"Using Z coordinates from Job without offset correction (via /z_part flag)")
     
     if len(contours) == 0 and len(operations) == 0:
         print(f"[WoodWOP WARNING] No contours or operations found! Check if Path objects have commands.")
@@ -680,16 +570,10 @@ def export(objectslist, filename, argstring):
         min_x, min_y, min_z = calculate_part_minimum()
         COORDINATE_OFFSET_X = -min_x
         COORDINATE_OFFSET_Y = -min_y
-        # Only set Z offset if USE_Z_FROM_JOB is False
-        if not USE_Z_FROM_JOB:
-            COORDINATE_OFFSET_Z = -min_z
-        else:
-            COORDINATE_OFFSET_Z = 0.0
-            print(f"[WoodWOP DEBUG] Z offset calculation skipped (using Z from Job via /z_part flag)")
+        COORDINATE_OFFSET_Z = -min_z
         print(f"[WoodWOP DEBUG] {COORDINATE_SYSTEM} coordinate system enabled")
         print(f"[WoodWOP DEBUG] Part minimum: X={min_x:.3f}, Y={min_y:.3f}, Z={min_z:.3f}")
-        z_offset_info = f"Z={COORDINATE_OFFSET_Z:.3f} (from Job)" if USE_Z_FROM_JOB else f"Z={COORDINATE_OFFSET_Z:.3f}"
-        print(f"[WoodWOP DEBUG] Coordinate offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, {z_offset_info}")
+        print(f"[WoodWOP DEBUG] Coordinate offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={COORDINATE_OFFSET_Z:.3f}")
         print(f"[WoodWOP DEBUG] NOTE: Offset will be applied ONLY to MPR format, G-code remains unchanged")
     else:
         COORDINATE_OFFSET_X = 0.0
@@ -703,51 +587,30 @@ def export(objectslist, filename, argstring):
         print(f"[WoodWOP ERROR] generate_mpr_content() returned {type(mpr_content)} instead of string: {mpr_content}")
         raise ValueError(f"generate_mpr_content() returned {type(mpr_content)} instead of string")
     print(f"[WoodWOP DEBUG] Generated {len(mpr_content)} characters")
-    log_verbose(f"MPR content generated: {len(mpr_content)} characters")
-    if ENABLE_VERBOSE_LOGGING:
-        lines = mpr_content.split('\n')
-        log_verbose(f"MPR content lines: {len(lines)}")
-        log_verbose(f"First 5 lines: {lines[:5] if len(lines) >= 5 else lines}", "DEBUG")
     print(f"[WoodWOP DEBUG] First 200 chars of MPR: {mpr_content[:200]}")
     
-    # Generate G-code content only if /nc flag is set
-    result_list = [("mpr", mpr_content)]  # Always return MPR file
-    
-    if OUTPUT_NC_FILE:
-        print(f"[WoodWOP DEBUG] Generating G-code content (NC file output enabled via /nc flag)...")
-        log_verbose(f"Starting G-code content generation...")
-        gcode_content = generate_gcode(objectslist)
-        # Validate G-code content
-        if not isinstance(gcode_content, str):
-            print(f"[WoodWOP ERROR] generate_gcode() returned {type(gcode_content)} instead of string: {gcode_content}")
-            raise ValueError(f"generate_gcode() returned {type(gcode_content)} instead of string")
-        print(f"[WoodWOP DEBUG] Generated {len(gcode_content)} characters of G-code")
-        log_verbose(f"G-code content generated: {len(gcode_content)} characters")
-        if ENABLE_VERBOSE_LOGGING:
-            gcode_lines = gcode_content.split('\n')
-            log_verbose(f"G-code content lines: {len(gcode_lines)}")
-            log_verbose(f"First 5 lines: {gcode_lines[:5] if len(gcode_lines) >= 5 else gcode_lines}", "DEBUG")
-        result_list.append(("nc", gcode_content))
-        print(f"[WoodWOP DEBUG] Returning both MPR and NC formats to FreeCAD")
-        log_verbose(f"NC file will be generated alongside MPR file")
-    else:
-        print(f"[WoodWOP DEBUG] NC file output disabled (no /nc flag) - returning only MPR format")
-        print(f"[WoodWOP DEBUG] NC file will not appear in save dialog")
-        log_verbose(f"Only MPR file will be generated (no /nc flag)")
+    # Generate G-code content in parallel
+    print(f"[WoodWOP DEBUG] Generating G-code content...")
+    gcode_content = generate_gcode(objectslist)
+    # Validate G-code content
+    if not isinstance(gcode_content, str):
+        print(f"[WoodWOP ERROR] generate_gcode() returned {type(gcode_content)} instead of string: {gcode_content}")
+        raise ValueError(f"generate_gcode() returned {type(gcode_content)} instead of string")
+    print(f"[WoodWOP DEBUG] Generated {len(gcode_content)} characters of G-code")
 
     # NOTE: DO NOT create files here - let FreeCAD handle file creation based on returned list
     # Report creation is moved to Command.py to ensure it happens AFTER user confirms filename in dialog
     
     # Return list of tuples: [(subpart_name, content), ...]
     # FreeCAD will create separate files for each tuple
-    # Format: [("mpr", mpr_content)] or [("mpr", mpr_content), ("nc", gcode_content)]
+    # Format: [("mpr", mpr_content), ("nc", gcode_content)]
     # FreeCAD will use subpart_name to determine file extension
+    print(f"[WoodWOP DEBUG] Returning both MPR and NC formats to FreeCAD")
     print(f"[WoodWOP DEBUG] MPR content type: {type(mpr_content)}, length: {len(mpr_content)} characters")
-    if OUTPUT_NC_FILE:
-        print(f"[WoodWOP DEBUG] G-code content type: {type(gcode_content)}, length: {len(gcode_content)} characters")
+    print(f"[WoodWOP DEBUG] G-code content type: {type(gcode_content)}, length: {len(gcode_content)} characters")
     
     # CRITICAL: Build result list and verify it's correct
-    result = result_list
+    result = [("mpr", mpr_content), ("nc", gcode_content)]
     
     # CRITICAL: Verify result is a list before returning
     if not isinstance(result, list):
@@ -781,7 +644,6 @@ def export(objectslist, filename, argstring):
     
     print(f"[WoodWOP DEBUG] Return value type: {type(result)}, length: {len(result)}")
     print(f"[WoodWOP DEBUG] Return value preview: {str(result)[:200]}...")
-    log_verbose(f"Export completed. Returning {len(result)} file(s) to FreeCAD")
     print(f"[WoodWOP DEBUG] ===== export() returning =====")
     
     try:
@@ -806,103 +668,6 @@ def export(objectslist, filename, argstring):
         return [("mpr", ""), ("nc", "")]
     
     return result
-
-
-def export_path_commands(objectslist, commands_filename):
-    """Export all Path Commands from all operations to a text file.
-    
-    This function collects all Path Commands from all Path objects in objectslist
-    and writes them to a file in a readable format for debugging and analysis.
-    
-    Args:
-        objectslist: List of FreeCAD Path objects (operations, Job, etc.)
-        commands_filename: Full path to the output file
-    """
-    import datetime
-    
-    output_lines = []
-    output_lines.append("=" * 80)
-    output_lines.append("FreeCAD Path Commands Export")
-    output_lines.append("=" * 80)
-    output_lines.append(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    output_lines.append(f"Post Processor: WoodWOP MPR")
-    output_lines.append("")
-    
-    total_commands = 0
-    operation_count = 0
-    
-    # Process all objects in the list
-    for obj in objectslist:
-        # Skip Job objects and other non-Path objects
-        if not hasattr(obj, 'Path'):
-            continue
-        
-        operation_count += 1
-        obj_label = obj.Label if hasattr(obj, 'Label') else f'Object_{operation_count}'
-        obj_type = type(obj).__name__
-        
-        output_lines.append("-" * 80)
-        output_lines.append(f"Operation {operation_count}: {obj_label}")
-        output_lines.append(f"Type: {obj_type}")
-        output_lines.append("-" * 80)
-        
-        # Get Path Commands
-        try:
-            # Use PathUtils.getPathWithPlacement to get commands with placement transformation
-            path_commands = PathUtils.getPathWithPlacement(obj).Commands
-        except:
-            # Fallback to direct Path access
-            if hasattr(obj.Path, 'Commands'):
-                path_commands = obj.Path.Commands
-            else:
-                path_commands = []
-        
-        if not path_commands:
-            output_lines.append("No Path Commands found")
-            output_lines.append("")
-            continue
-        
-        output_lines.append(f"Total commands: {len(path_commands)}")
-        output_lines.append("")
-        
-        # Write each command
-        for idx, cmd in enumerate(path_commands):
-            cmd_num = idx + 1
-            cmd_name = cmd.Name
-            cmd_params = cmd.Parameters
-            
-            # Format command line
-            cmd_line = f"  [{cmd_num:4d}] {cmd_name}"
-            
-            # Add parameters
-            if cmd_params:
-                param_strs = []
-                for param, value in sorted(cmd_params.items()):
-                    # Format parameter value
-                    if isinstance(value, float):
-                        param_strs.append(f"{param}{value:.{PRECISION}f}")
-                    else:
-                        param_strs.append(f"{param}{value}")
-                if param_strs:
-                    cmd_line += " " + " ".join(param_strs)
-            
-            output_lines.append(cmd_line)
-            total_commands += 1
-        
-        output_lines.append("")
-    
-    output_lines.append("=" * 80)
-    output_lines.append(f"Summary: {operation_count} operation(s), {total_commands} total command(s)")
-    output_lines.append("=" * 80)
-    
-    # Write to file
-    try:
-        with open(commands_filename, 'w', encoding='utf-8', newline='\n') as f:
-            f.write('\n'.join(output_lines))
-        print(f"[WoodWOP DEBUG] Path Commands exported to: {commands_filename}")
-        print(f"[WoodWOP DEBUG]   Operations: {operation_count}, Commands: {total_commands}")
-    except Exception as e:
-        raise Exception(f"Failed to write Path Commands file: {e}")
 
 
 def create_job_report(job, report_filename):
@@ -1163,8 +928,6 @@ def get_tool_number(obj):
 
 def extract_contour_from_path(obj):
     """Extract contour elements (points, lines, arcs) from Path commands."""
-    global ENABLE_G0_START, LAST_G0_POSITION
-    
     elements = []
     current_x = 0.0
     current_y = 0.0
@@ -1172,7 +935,6 @@ def extract_contour_from_path(obj):
     start_x = None
     start_y = None
     start_z = None
-    g0_before_start = None  # Last G0 position before first G1/G2/G3
 
     if not hasattr(obj, 'Path'):
         return elements, (0.0, 0.0, 0.0)
@@ -1186,45 +948,15 @@ def extract_contour_from_path(obj):
         params = cmd.Parameters
 
         # Update position
-        # Check if X and Y are explicitly provided in the command
-        has_x = 'X' in params
-        has_y = 'Y' in params
-        has_z = 'Z' in params
-        
-        # If this is the first movement command and only Z is provided (X and Y are not),
-        # set X and Y to 0 (they will be adjusted by G54 offset later if needed)
-        is_first_movement = (start_x is None and cmd.Name in ['G0', 'G00', 'G1', 'G01', 'G2', 'G02', 'G3', 'G03'])
-        
-        if is_first_movement and has_z and not has_x and not has_y:
-            # First movement command with only Z provided, X and Y should be 0
-            # (will be adjusted by G54 offset later if needed)
-            x = 0.0
-            y = 0.0
-        else:
-            # Standard G-code behavior: if X/Y not provided, use current position
-            x = params.get('X', current_x)
-            y = params.get('Y', current_y)
+        x = params.get('X', current_x)
+        y = params.get('Y', current_y)
         z = params.get('Z', current_z)
-
-        # Track G0 rapid movements if ENABLE_G0_START is enabled
-        if ENABLE_G0_START and cmd.Name in ['G0', 'G00']:
-            # Save G0 position (this will be used as start if next command is G1/G2/G3)
-            g0_before_start = (x, y, z)
-            LAST_G0_POSITION = (x, y, z)
-            print(f"[WoodWOP DEBUG] G0 rapid movement detected: X={x:.3f}, Y={y:.3f}, Z={z:.3f}")
 
         # Save start position from first movement command
         if start_x is None and cmd.Name in ['G0', 'G00', 'G1', 'G01', 'G2', 'G02', 'G3', 'G03']:
-            # If ENABLE_G0_START and we have a G0 position before this, use it
-            if ENABLE_G0_START and g0_before_start is not None and cmd.Name in ['G1', 'G01', 'G2', 'G02', 'G3', 'G03']:
-                start_x, start_y, start_z = g0_before_start
-                print(f"[WoodWOP DEBUG] Using G0 position as contour start: X={start_x:.3f}, Y={start_y:.3f}, Z={start_z:.3f}")
-            else:
-                # Use coordinates from the first movement command (x, y, z), not current_x/y/z
-                # which haven't been updated yet
-                start_x = x
-                start_y = y
-                start_z = z
+            start_x = current_x
+            start_y = current_y
+            start_z = current_z
 
         # Linear move (G1) - create line
         if cmd.Name in ['G1', 'G01']:
@@ -1542,7 +1274,6 @@ def generate_mpr_content():
     global contours, operations, WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
     global STOCK_EXTENT_X, STOCK_EXTENT_Y, OUTPUT_COMMENTS, PRECISION, now
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
-    global USE_Z_FROM_JOB, ENABLE_G0_START, LAST_G0_POSITION
     
     output = []
 
@@ -1623,25 +1354,10 @@ def generate_mpr_content():
         # Add starting point ($E0 KP) - always required for contours
         start_x, start_y, start_z = contour.get('start_pos', (0.0, 0.0, 0.0))
         
-        # If X and Y are 0 (not defined in command), set them based on G54 offset
-        # Without G54: X and Y remain 0
-        # With G54: X and Y are set to the offset values
-        if start_x == 0.0 and start_y == 0.0:
-            # X and Y were not defined in the command
-            if COORDINATE_SYSTEM:
-                # With G54: use offset values
-                start_x = COORDINATE_OFFSET_X
-                start_y = COORDINATE_OFFSET_Y
-            # Without G54: X and Y remain 0 (already set)
-        else:
-            # X and Y were defined in the command, apply offset if G54 is set
-            if COORDINATE_SYSTEM:
-                start_x += COORDINATE_OFFSET_X
-                start_y += COORDINATE_OFFSET_Y
-        
-        # Apply Z offset only if USE_Z_FROM_JOB is False
-        if not USE_Z_FROM_JOB:
-            start_z += COORDINATE_OFFSET_Z
+        # Apply coordinate offset if G54 or other coordinate system is set
+        start_x += COORDINATE_OFFSET_X
+        start_y += COORDINATE_OFFSET_Y
+        start_z += COORDINATE_OFFSET_Z
 
         output.append('$E0')
         output.append('KP ')
@@ -1661,67 +1377,6 @@ def generate_mpr_content():
         prev_elem_y = start_y
         prev_elem_z = start_z
         
-        # If ENABLE_G0_START is enabled and we have LAST_G0_POSITION, add G0 movement as first element
-        # This represents rapid movement from last G0 position to the start of the contour
-        if ENABLE_G0_START and LAST_G0_POSITION is not None and contour.get('elements') and len(contour['elements']) > 0:
-            # Get the G0 start position (last G0 before first G1/G2/G3)
-            g0_x, g0_y, g0_z = LAST_G0_POSITION
-            
-            # Apply coordinate offset to G0 position
-            g0_x += COORDINATE_OFFSET_X
-            g0_y += COORDINATE_OFFSET_Y
-            if not USE_Z_FROM_JOB:
-                g0_z += COORDINATE_OFFSET_Z
-            
-            # Get the first actual element position (this is where G0 should move to)
-            first_elem = contour['elements'][0]
-            first_elem_x = first_elem.get('x', start_x) + COORDINATE_OFFSET_X
-            first_elem_y = first_elem.get('y', start_y) + COORDINATE_OFFSET_Y
-            first_elem_z = first_elem.get('z', start_z)
-            if not USE_Z_FROM_JOB:
-                first_elem_z += COORDINATE_OFFSET_Z
-            
-            # Only add G0 element if G0 position is different from first element position
-            if abs(g0_x - first_elem_x) > 0.001 or abs(g0_y - first_elem_y) > 0.001 or abs(g0_z - first_elem_z) > 0.001:
-                # Add G0 rapid movement as first element (before $E1)
-                # In WoodWOP format, we'll use KL (line) element to represent G0 movement
-                # Note: WoodWOP doesn't have explicit G0, but we can add it as a line element
-                # The actual G0 behavior will be handled by the machine controller
-                output.append('$E0.5')  # Use fractional element number to indicate G0
-                output.append('KL ')  # Use line element for G0 movement
-                output.append(f'X={fmt(first_elem_x)}')
-                output.append(f'Y={fmt(first_elem_y)}')
-                output.append(f'Z={fmt(first_elem_z)}')
-                # Calculate angles for G0 movement (from G0 position to first element)
-                dx = first_elem_x - g0_x
-                dy = first_elem_y - g0_y
-                dz = first_elem_z - g0_z
-                
-                # Calculate angle in X/Y plane (WI) - in radians
-                if abs(dx) > 0.001 or abs(dy) > 0.001:
-                    wi_angle = math.atan2(dy, dx)
-                else:
-                    wi_angle = 0.0
-                
-                # Calculate angle to X/Y plane (WZ) - in radians
-                line_length_xy = math.sqrt(dx*dx + dy*dy)
-                if line_length_xy > 0.001:
-                    wz_angle = math.atan2(dz, line_length_xy)
-                else:
-                    wz_angle = 0.0
-                
-                output.append(f'.X={fmt(first_elem_x)}')
-                output.append(f'.Y={fmt(first_elem_y)}')
-                output.append(f'.Z={fmt(first_elem_z)}')
-                output.append(f'.WI={fmt(wi_angle)}')
-                output.append(f'.WZ={fmt(wz_angle)}')
-                output.append('')
-                
-                # Update previous point for next element (use first element position)
-                prev_elem_x = first_elem_x
-                prev_elem_y = first_elem_y
-                prev_elem_z = first_elem_z
-        
         for idx, elem in enumerate(contour['elements']):
             elem_num = idx + 1
             output.append(f'$E{elem_num}')
@@ -1730,10 +1385,7 @@ def generate_mpr_content():
                 # Apply coordinate offset if G54 or other coordinate system is set
                 elem_x = elem['x'] + COORDINATE_OFFSET_X
                 elem_y = elem['y'] + COORDINATE_OFFSET_Y
-                # Apply Z offset only if USE_Z_FROM_JOB is False
-                z_value = elem.get('z', 0.0)
-                if not USE_Z_FROM_JOB:
-                    z_value += COORDINATE_OFFSET_Z
+                z_value = elem.get('z', 0.0) + COORDINATE_OFFSET_Z
                 
                 output.append('KL ')
                 output.append(f'X={fmt(elem_x)}')
@@ -1780,10 +1432,7 @@ def generate_mpr_content():
                 # Apply coordinate offset if G54 or other coordinate system is set
                 elem_x = elem['x'] + COORDINATE_OFFSET_X
                 elem_y = elem['y'] + COORDINATE_OFFSET_Y
-                # Apply Z offset only if USE_Z_FROM_JOB is False
-                z_value = elem.get('z', 0.0)
-                if not USE_Z_FROM_JOB:
-                    z_value += COORDINATE_OFFSET_Z
+                z_value = elem.get('z', 0.0) + COORDINATE_OFFSET_Z
                 
                 output.append('KA ')
                 output.append(f'X={fmt(elem_x)}')  # End point X
@@ -1884,10 +1533,7 @@ def generate_mpr_content():
         output.append(f'KM="Generated by FreeCAD WoodWOP Post Processor"')
         output.append(f'KM="Date: {now.strftime("%Y-%m-%d %H:%M:%S")}"')
         if COORDINATE_SYSTEM:
-            z_offset_str = "not applied (using Z from Job)" if USE_Z_FROM_JOB else f"{COORDINATE_OFFSET_Z:.3f}"
-            output.append(f'KM="Coordinate System: {COORDINATE_SYSTEM} (offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={z_offset_str})"')
-            if USE_Z_FROM_JOB:
-                output.append(f'KM="NOTE: Z coordinates are used from Job without offset correction"')
+            output.append(f'KM="Coordinate System: {COORDINATE_SYSTEM} (offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={COORDINATE_OFFSET_Z:.3f})"')
             output.append(f'KM="NOTE: G-code output is NOT affected by coordinate system offset"')
         output.append('')
 
