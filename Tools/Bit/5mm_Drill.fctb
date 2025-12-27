@@ -1,0 +1,13 @@
+{
+  "attribute": {},
+  "name": "5mm Drill",
+  "parameter": {
+    "Diameter": "5.0000 mm",
+    "Length": "50.0000 mm",
+    "TipAngle": "119.0000 \u00b0",
+    "Units": "Metric"
+  },
+  "shape": "drill.fcstd",
+  "shape-type": "Drill",
+  "version": 2
+}
