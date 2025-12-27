@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(echo \"sudo cp \"\"$HOME/Documents/woodwop post/woodwop_post.py\"\" \"\"/Applications/FreeCAD.app/Contents/Resources/Mod/CAM/Path/Post/scripts/\"\"\")",
+      "Bash(grep:*)",
+      "Bash(chmod:*)",
+      "Bash(ls:*)",
+      "Bash(file:*)"
+    ]
+  }
+}

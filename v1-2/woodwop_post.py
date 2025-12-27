@@ -26,10 +26,6 @@ TOOLTIP_ARGS = '''
 --workpiece-width=Y: Workpiece width in mm (default: auto-detect)
 --workpiece-thickness=Z: Workpiece thickness in mm (default: auto-detect)
 --use-part-name: Name .mpr file after the part/body name instead of document name
---g54: Set coordinate system offset to minimum part coordinates
-  When set, MPR coordinates will be offset by minimum part coordinates (X, Y, Z).
-  Origin (0,0,0) will be at the minimum point of the part.
-  NOTE: G-code output is NOT affected and remains unchanged.
 '''
 
 # File extension for WoodWOP MPR files
@@ -50,14 +46,6 @@ STOCK_EXTENT_X = 0.0
 STOCK_EXTENT_Y = 0.0
 USE_PART_NAME = False
 
-# Coordinate system offset (for G54, G55, etc.)
-# If set, coordinates will be offset by the minimum part coordinates
-# This is ONLY applied to MPR format, G-code remains unchanged
-COORDINATE_SYSTEM = None  # None, 'G54', 'G55', 'G56', 'G57', 'G58', 'G59'
-COORDINATE_OFFSET_X = 0.0
-COORDINATE_OFFSET_Y = 0.0
-COORDINATE_OFFSET_Z = 0.0
-
 # Tracking
 contour_counter = 1
 contours = []
@@ -71,38 +59,17 @@ def export(objectslist, filename, argstring):
     NOTE: FreeCAD may show a save dialog before calling this function.
     We ignore the filename from that dialog and automatically create files
     based on Model or part name from Job settings.
-    
-    CRITICAL: This function MUST return a list of tuples: [("mpr", content), ("nc", content)]
-    NEVER return bool, None, or string directly.
     """
-    # CRITICAL: Ensure we always return a list, never bool or other types
-    # This is a safety check at the very beginning
-    import sys
-    import traceback
-    
-    # Debug output - use both print() and FreeCAD.Console to ensure visibility
-    try:
-        import FreeCAD
-        FreeCAD.Console.PrintMessage("[WoodWOP DEBUG] ===== export() called =====\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] File: {__file__}\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] objectslist type: {type(objectslist)}, length: {len(objectslist) if hasattr(objectslist, '__len__') else 'N/A'}\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] filename: {filename}\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] argstring: {argstring}\n")
-    except Exception as e:
-        print(f"[WoodWOP ERROR] Failed to print to FreeCAD console: {e}")
-    
-    print(f"[WoodWOP DEBUG] ===== export() called =====")
-    print(f"[WoodWOP DEBUG] File: {__file__}")
-    print(f"[WoodWOP DEBUG] objectslist type: {type(objectslist)}, length: {len(objectslist) if hasattr(objectslist, '__len__') else 'N/A'}")
-    print(f"[WoodWOP DEBUG] filename: {filename}")
-    print(f"[WoodWOP DEBUG] argstring: {argstring}")
-    print(f"[WoodWOP DEBUG] Files will be created automatically based on Model/part name from Job")
-    
     global OUTPUT_COMMENTS, PRECISION
     global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS, USE_PART_NAME
     global STOCK_EXTENT_X, STOCK_EXTENT_Y
     global contour_counter, contours, operations, tools_used
-    global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
+
+    # Debug output
+    print(f"[WoodWOP DEBUG] export() called")
+    print(f"[WoodWOP DEBUG] Original filename from dialog (will be ignored): {filename}")
+    print(f"[WoodWOP DEBUG] Arguments: {argstring}")
+    print(f"[WoodWOP DEBUG] Files will be created automatically based on Model/part name from Job")
 
     # Try to get actual output file from Job
     actual_output_file = None
@@ -163,9 +130,6 @@ def export(objectslist, filename, argstring):
                 WORKPIECE_WIDTH = float(arg.split('=')[1])
             elif arg.startswith('--workpiece-thickness='):
                 WORKPIECE_THICKNESS = float(arg.split('=')[1])
-            elif arg in ['--g54', '--G54']:
-                COORDINATE_SYSTEM = 'G54'
-                print(f"[WoodWOP DEBUG] Coordinate system set to G54 (minimum part coordinates)")
 
     # Get Job and extract base filename from settings or part name
     job = None
@@ -491,110 +455,108 @@ def export(objectslist, filename, argstring):
         print(f"[WoodWOP WARNING] No contours or operations found! Check if Path objects have commands.")
         print(f"[WoodWOP WARNING] This will create an empty MPR file with only header and workpiece definition.")
     
-    # Calculate coordinate offset if G54 or other coordinate system flag is set
-    # This offset will be applied ONLY to MPR format, G-code remains unchanged
-    if COORDINATE_SYSTEM:
-        min_x, min_y, min_z = calculate_part_minimum()
-        COORDINATE_OFFSET_X = -min_x
-        COORDINATE_OFFSET_Y = -min_y
-        COORDINATE_OFFSET_Z = -min_z
-        print(f"[WoodWOP DEBUG] {COORDINATE_SYSTEM} coordinate system enabled")
-        print(f"[WoodWOP DEBUG] Part minimum: X={min_x:.3f}, Y={min_y:.3f}, Z={min_z:.3f}")
-        print(f"[WoodWOP DEBUG] Coordinate offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={COORDINATE_OFFSET_Z:.3f}")
-        print(f"[WoodWOP DEBUG] NOTE: Offset will be applied ONLY to MPR format, G-code remains unchanged")
-    else:
-        COORDINATE_OFFSET_X = 0.0
-        COORDINATE_OFFSET_Y = 0.0
-        COORDINATE_OFFSET_Z = 0.0
-        print(f"[WoodWOP DEBUG] Using project coordinate system (no offset)")
-    
     mpr_content = generate_mpr_content()
-    # Validate MPR content
-    if not isinstance(mpr_content, str):
-        print(f"[WoodWOP ERROR] generate_mpr_content() returned {type(mpr_content)} instead of string: {mpr_content}")
-        raise ValueError(f"generate_mpr_content() returned {type(mpr_content)} instead of string")
     print(f"[WoodWOP DEBUG] Generated {len(mpr_content)} characters")
     print(f"[WoodWOP DEBUG] First 200 chars of MPR: {mpr_content[:200]}")
     
     # Generate G-code content in parallel
     print(f"[WoodWOP DEBUG] Generating G-code content...")
     gcode_content = generate_gcode(objectslist)
-    # Validate G-code content
-    if not isinstance(gcode_content, str):
-        print(f"[WoodWOP ERROR] generate_gcode() returned {type(gcode_content)} instead of string: {gcode_content}")
-        raise ValueError(f"generate_gcode() returned {type(gcode_content)} instead of string")
     print(f"[WoodWOP DEBUG] Generated {len(gcode_content)} characters of G-code")
 
-    # NOTE: DO NOT create files here - let FreeCAD handle file creation based on returned list
-    # Report creation is moved to Command.py to ensure it happens AFTER user confirms filename in dialog
-    
-    # Return list of tuples: [(subpart_name, content), ...]
-    # FreeCAD will create separate files for each tuple
-    # Format: [("mpr", mpr_content), ("nc", gcode_content)]
-    # FreeCAD will use subpart_name to determine file extension
-    print(f"[WoodWOP DEBUG] Returning both MPR and NC formats to FreeCAD")
-    print(f"[WoodWOP DEBUG] MPR content type: {type(mpr_content)}, length: {len(mpr_content)} characters")
-    print(f"[WoodWOP DEBUG] G-code content type: {type(gcode_content)}, length: {len(gcode_content)} characters")
-    
-    # CRITICAL: Build result list and verify it's correct
-    result = [("mpr", mpr_content), ("nc", gcode_content)]
-    
-    # CRITICAL: Verify result is a list before returning
-    if not isinstance(result, list):
-        error_msg = f"[WoodWOP ERROR] result is not a list! Type: {type(result)}, value: {result}"
-        print(error_msg)
+    # Write .mpr file and return G-code for FreeCAD to write .nc file
+    if base_filename and output_dir:
+        # Create full path for MPR file
+        mpr_filename = os.path.join(output_dir, base_filename + '.mpr')
+        
+        # Write MPR file
+        print(f"[WoodWOP DEBUG] Writing MPR file: {mpr_filename}")
+        print(f"[WoodWOP DEBUG] MPR content length: {len(mpr_content)} characters")
+        if len(mpr_content) == 0:
+            print(f"[WoodWOP ERROR] MPR content is empty! This should not happen.")
+            raise ValueError("Generated MPR content is empty")
+        
         try:
-            import FreeCAD
-            FreeCAD.Console.PrintError(f"{error_msg}\n")
-            import traceback
-            FreeCAD.Console.PrintError(f"Traceback:\n{traceback.format_exc()}\n")
-        except:
-            pass
-        # Force return a list
-        result = [("mpr", str(mpr_content) if mpr_content else ""), ("nc", str(gcode_content) if gcode_content else "")]
-    
-    # Verify each element is a tuple
-    for idx, item in enumerate(result):
-        if not isinstance(item, tuple) or len(item) != 2:
-            error_msg = f"[WoodWOP ERROR] result[{idx}] is not a tuple of 2 elements! Type: {type(item)}, value: {item}"
-            print(error_msg)
+            with open(mpr_filename, 'w', encoding='cp1252', newline='\r\n') as f:
+                f.write(mpr_content)
+            file_size = os.path.getsize(mpr_filename)
+            print(f"[WoodWOP DEBUG] MPR file written successfully! File size: {file_size} bytes")
+            print(f"✓ WoodWOP MPR file written: {mpr_filename}")
+        except Exception as e:
+            print(f"[WoodWOP ERROR] Failed to write MPR file: {e}")
+            raise
+        
+        # Also create .nc file with base name (in case FreeCAD doesn't write it)
+        gcode_filename = os.path.join(output_dir, base_filename + '.nc')
+        print(f"[WoodWOP DEBUG] Writing G-code file: {gcode_filename}")
+        try:
+            with open(gcode_filename, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(gcode_content)
+            print(f"[WoodWOP DEBUG] G-code file written successfully!")
+            print(f"✓ G-code file written: {gcode_filename}")
+        except Exception as e:
+            print(f"[WoodWOP WARNING] Failed to write G-code file: {e}")
+        
+        # Create Job properties report file
+        if job:
+            report_filename = os.path.join(output_dir, base_filename + '_job_report.txt')
+            print(f"[WoodWOP DEBUG] Creating Job properties report: {report_filename}")
             try:
-                import FreeCAD
-                FreeCAD.Console.PrintError(f"{error_msg}\n")
-            except:
-                pass
-            # Fix the item
-            if isinstance(item, tuple) and len(item) == 1:
-                result[idx] = (item[0], "")
-            elif not isinstance(item, tuple):
-                result[idx] = (f"item{idx}", str(item) if item else "")
-    
-    print(f"[WoodWOP DEBUG] Return value type: {type(result)}, length: {len(result)}")
-    print(f"[WoodWOP DEBUG] Return value preview: {str(result)[:200]}...")
-    print(f"[WoodWOP DEBUG] ===== export() returning =====")
-    
-    try:
-        import FreeCAD
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] Returning list with {len(result)} items: {[item[0] for item in result]}\n")
-        FreeCAD.Console.PrintMessage(f"[WoodWOP DEBUG] Return value type: {type(result).__name__}\n")
-    except:
-        pass
-    
-    # FINAL CHECK: This should NEVER be True, but if it is, we'll catch it
-    if result is True or result is False:
-        error_msg = f"[WoodWOP CRITICAL ERROR] result is a boolean! This should NEVER happen! Value: {result}"
-        print(error_msg)
+                create_job_report(job, report_filename)
+                print(f"[WoodWOP DEBUG] Job report written successfully!")
+                print(f"✓ Job properties report written: {report_filename}")
+            except Exception as e:
+                print(f"[WoodWOP WARNING] Failed to write Job report: {e}")
+        
+        # Return G-code content for FreeCAD to write to .nc file
+        # This ensures FreeCAD writes the correct content instead of empty string
+        # FreeCAD will write to the filename it created (may have different path/name)
+        # but we already created our .nc file with base name
+        print(f"[WoodWOP DEBUG] Returning G-code content to FreeCAD for .nc file")
+        return gcode_content
+    else:
+        # FreeCAD is using stdout mode ("-").
+        # Use the same base_filename and output_dir we determined above
+        if not base_filename:
+            base_filename = "export"
+        if not output_dir:
+            output_dir = os.getcwd()
+        
+        mpr_filename = os.path.join(output_dir, base_filename + ".mpr")
+        gcode_filename = os.path.join(output_dir, base_filename + ".nc")
+
+        print(f"[WoodWOP DEBUG] stdout mode: writing MPR file directly to: {mpr_filename}")
         try:
-            import FreeCAD
-            FreeCAD.Console.PrintError(f"{error_msg}\n")
-            import traceback
-            FreeCAD.Console.PrintError(f"Traceback:\n{traceback.format_exc()}\n")
-        except:
-            pass
-        # Return empty list as fallback
-        return [("mpr", ""), ("nc", "")]
-    
-    return result
+            with open(mpr_filename, 'w', encoding='cp1252', newline='\r\n') as f:
+                f.write(mpr_content)
+            file_size = os.path.getsize(mpr_filename)
+            print(f"[WoodWOP DEBUG] MPR file written successfully! File size: {file_size} bytes")
+            print(f"✓ WoodWOP MPR file written: {mpr_filename}")
+        except Exception as e:
+            print(f"[WoodWOP ERROR] Failed to write MPR file in stdout mode: {e}")
+
+        print(f"[WoodWOP DEBUG] stdout mode: writing G-code file: {gcode_filename}")
+        try:
+            # gcode_content already generated above, reuse it
+            with open(gcode_filename, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(gcode_content)
+            print(f"✓ G-code file written: {gcode_filename}")
+        except Exception as e:
+            print(f"[WoodWOP WARNING] Failed to write G-code file in stdout mode: {e}")
+
+        # Create Job properties report file in stdout mode
+        if job:
+            report_filename = os.path.join(output_dir, base_filename + '_job_report.txt')
+            print(f"[WoodWOP DEBUG] Creating Job properties report: {report_filename}")
+            try:
+                create_job_report(job, report_filename)
+                print(f"[WoodWOP DEBUG] Job report written successfully!")
+                print(f"✓ Job properties report written: {report_filename}")
+            except Exception as e:
+                print(f"[WoodWOP WARNING] Failed to write Job report in stdout mode: {e}")
+
+        print(f"[WoodWOP DEBUG] Returning empty string from stdout mode (files already written)")
+        return ""
 
 
 def create_job_report(job, report_filename):
@@ -1074,78 +1036,10 @@ def create_pocket_milling(obj, contour_id, tool_number):
     }
 
 
-def calculate_part_minimum():
-    """Calculate minimum X, Y, Z coordinates from all contours and operations.
-    
-    This finds the minimum point (intersection of minimum X, Y, Z) which will be used
-    as the origin (0,0,0) when G54 or other coordinate system flags are set.
-    
-    Returns:
-        tuple: (min_x, min_y, min_z) or (0.0, 0.0, 0.0) if no coordinates found
-    """
-    global contours, operations
-    
-    min_x = None
-    min_y = None
-    min_z = None
-    
-    # Check all contour elements
-    for contour in contours:
-        # Check start position
-        start_x, start_y, start_z = contour.get('start_pos', (0.0, 0.0, 0.0))
-        if min_x is None or start_x < min_x:
-            min_x = start_x
-        if min_y is None or start_y < min_y:
-            min_y = start_y
-        if min_z is None or start_z < min_z:
-            min_z = start_z
-        
-        # Check all elements in contour
-        for elem in contour.get('elements', []):
-            x = elem.get('x', 0.0)
-            y = elem.get('y', 0.0)
-            z = elem.get('z', 0.0)
-            
-            if min_x is None or x < min_x:
-                min_x = x
-            if min_y is None or y < min_y:
-                min_y = y
-            if min_z is None or z < min_z:
-                min_z = z
-    
-    # Check all drilling operations
-    for op in operations:
-        if op.get('type') == 'BohrVert':
-            xa = op.get('xa', 0.0)
-            ya = op.get('ya', 0.0)
-            # Z is typically at surface (0) for drilling, but check depth
-            depth = op.get('depth', 0.0)
-            z = -depth  # Depth is negative Z
-            
-            if min_x is None or xa < min_x:
-                min_x = xa
-            if min_y is None or ya < min_y:
-                min_y = ya
-            if min_z is None or z < min_z:
-                min_z = z
-    
-    # Return minimum coordinates or (0,0,0) if nothing found
-    if min_x is None:
-        return (0.0, 0.0, 0.0)
-    
-    return (min_x, min_y, min_z)
-
-
 def generate_mpr_content():
-    """Generate complete MPR format content and return as string.
-    
-    NOTE: If COORDINATE_SYSTEM is set (G54, G55, etc.), coordinates will be offset
-    by the minimum part coordinates. This offset is applied ONLY to MPR format.
-    G-code generation is NOT affected and remains unchanged.
-    """
+    """Generate complete MPR format content and return as string."""
     global contours, operations, WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
     global STOCK_EXTENT_X, STOCK_EXTENT_Y, OUTPUT_COMMENTS, PRECISION, now
-    global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
     
     output = []
 
@@ -1225,11 +1119,6 @@ def generate_mpr_content():
 
         # Add starting point ($E0 KP) - always required for contours
         start_x, start_y, start_z = contour.get('start_pos', (0.0, 0.0, 0.0))
-        
-        # Apply coordinate offset if G54 or other coordinate system is set
-        start_x += COORDINATE_OFFSET_X
-        start_y += COORDINATE_OFFSET_Y
-        start_z += COORDINATE_OFFSET_Z
 
         output.append('$E0')
         output.append('KP ')
@@ -1244,36 +1133,26 @@ def generate_mpr_content():
         output.append('')
 
         # Add contour elements
-        # Track previous point coordinates (with offset applied) for angle calculations
-        prev_elem_x = start_x
-        prev_elem_y = start_y
-        prev_elem_z = start_z
-        
         for idx, elem in enumerate(contour['elements']):
             elem_num = idx + 1
             output.append(f'$E{elem_num}')
 
             if elem['type'] == 'KL':  # Line
-                # Apply coordinate offset if G54 or other coordinate system is set
-                elem_x = elem['x'] + COORDINATE_OFFSET_X
-                elem_y = elem['y'] + COORDINATE_OFFSET_Y
-                z_value = elem.get('z', 0.0) + COORDINATE_OFFSET_Z
-                
                 output.append('KL ')
-                output.append(f'X={fmt(elem_x)}')
-                output.append(f'Y={fmt(elem_y)}')
+                output.append(f'X={fmt(elem["x"])}')
+                output.append(f'Y={fmt(elem["y"])}')
                 # Z coordinate - always include (even if 0)
+                z_value = elem.get('z', 0.0)
                 output.append(f'Z={fmt(z_value)}')
                 
                 # Point values: absolute coordinates of end point relative to start point coordinate system
                 # Calculate line angle in X/Y plane (WI) and angle to X/Y plane (WZ)
-                # Use tracked previous point (already has offset applied)
-                prev_x = prev_elem_x
-                prev_y = prev_elem_y
-                prev_z = prev_elem_z
+                prev_x = start_x if idx == 0 else contour['elements'][idx-1].get('x', start_x)
+                prev_y = start_y if idx == 0 else contour['elements'][idx-1].get('y', start_y)
+                prev_z = start_z if idx == 0 else contour['elements'][idx-1].get('z', start_z)
                 
-                dx = elem_x - prev_x
-                dy = elem_y - prev_y
+                dx = elem['x'] - prev_x
+                dy = elem['y'] - prev_y
                 dz = z_value - prev_z
                 
                 # Calculate angle in X/Y plane (WI) - in radians
@@ -1289,28 +1168,19 @@ def generate_mpr_content():
                 else:
                     wz_angle = 0.0
                 
-                output.append(f'.X={fmt(elem_x)}')
-                output.append(f'.Y={fmt(elem_y)}')
+                output.append(f'.X={fmt(elem["x"])}')
+                output.append(f'.Y={fmt(elem["y"])}')
                 output.append(f'.Z={fmt(z_value)}')
                 output.append(f'.WI={fmt(wi_angle)}')
                 output.append(f'.WZ={fmt(wz_angle)}')
-                
-                # Update tracked previous point for next element
-                prev_elem_x = elem_x
-                prev_elem_y = elem_y
-                prev_elem_z = z_value
 
             elif elem['type'] == 'KA':  # Arc
-                # Apply coordinate offset if G54 or other coordinate system is set
-                elem_x = elem['x'] + COORDINATE_OFFSET_X
-                elem_y = elem['y'] + COORDINATE_OFFSET_Y
-                z_value = elem.get('z', 0.0) + COORDINATE_OFFSET_Z
-                
                 output.append('KA ')
-                output.append(f'X={fmt(elem_x)}')  # End point X
-                output.append(f'Y={fmt(elem_y)}')  # End point Y
+                output.append(f'X={fmt(elem["x"])}')  # End point X
+                output.append(f'Y={fmt(elem["y"])}')  # End point Y
                 
                 # Z coordinate - always include (even if 0) as shown in empty_3.mpr
+                z_value = elem.get('z', 0.0)
                 output.append(f'Z={fmt(z_value)}')
 
                 # WoodWOP arc format: X, Y, Z (end point), DS (direction), R (radius)
@@ -1333,18 +1203,18 @@ def generate_mpr_content():
                     output.append(f'R={fmt(elem["r"])}')
 
                 # Point values: absolute coordinates relative to start point coordinate system
-                # Use tracked previous point (already has offset applied)
-                prev_x = prev_elem_x
-                prev_y = prev_elem_y
-                prev_z = prev_elem_z
+                # Get previous point (start of arc)
+                prev_x = start_x if idx == 0 else contour['elements'][idx-1].get('x', start_x)
+                prev_y = start_y if idx == 0 else contour['elements'][idx-1].get('y', start_y)
+                prev_z = start_z if idx == 0 else contour['elements'][idx-1].get('z', start_z)
                 
-                # Calculate center coordinates (absolute) - I and J are offsets, so add to previous point
+                # Calculate center coordinates (absolute)
                 center_x = prev_x + elem.get('i', 0)
                 center_y = prev_y + elem.get('j', 0)
                 
                 # Calculate angles in X/Y plane
                 start_angle = math.atan2(prev_y - center_y, prev_x - center_x)
-                end_angle = math.atan2(elem_y - center_y, elem_x - center_x)
+                end_angle = math.atan2(elem['y'] - center_y, elem['x'] - center_x)
                 
                 # Normalize angles for direction
                 if direction == 'CCW' and end_angle < start_angle:
@@ -1355,8 +1225,8 @@ def generate_mpr_content():
                 # WAZ (angle to X/Y plane on arc path) - 0 for arcs in XY plane
                 waz_angle = 0.0
                 
-                output.append(f'.X={fmt(elem_x)}')
-                output.append(f'.Y={fmt(elem_y)}')
+                output.append(f'.X={fmt(elem["x"])}')
+                output.append(f'.Y={fmt(elem["y"])}')
                 output.append(f'.Z={fmt(z_value)}')
                 output.append(f'.I={fmt(center_x)}')
                 output.append(f'.J={fmt(center_y)}')
@@ -1365,11 +1235,6 @@ def generate_mpr_content():
                 output.append(f'.WI={fmt(start_angle)}')
                 output.append(f'.WO={fmt(end_angle)}')
                 output.append(f'.WAZ={fmt(waz_angle)}')
-                
-                # Update tracked previous point for next element
-                prev_elem_x = elem_x
-                prev_elem_y = elem_y
-                prev_elem_z = z_value
 
             output.append('')
 
@@ -1404,21 +1269,14 @@ def generate_mpr_content():
         output.append('<101 \\Comment\\')
         output.append(f'KM="Generated by FreeCAD WoodWOP Post Processor"')
         output.append(f'KM="Date: {now.strftime("%Y-%m-%d %H:%M:%S")}"')
-        if COORDINATE_SYSTEM:
-            output.append(f'KM="Coordinate System: {COORDINATE_SYSTEM} (offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={COORDINATE_OFFSET_Z:.3f})"')
-            output.append(f'KM="NOTE: G-code output is NOT affected by coordinate system offset"')
         output.append('')
 
     # Operations
     for op in operations:
         if op['type'] == 'BohrVert':
-            # Apply coordinate offset if G54 or other coordinate system is set
-            xa = op['xa'] + COORDINATE_OFFSET_X
-            ya = op['ya'] + COORDINATE_OFFSET_Y
-            
             output.append(f'<{op["id"]} \\BohrVert\\')
-            output.append(f'XA="{fmt(xa)}"')
-            output.append(f'YA="{fmt(ya)}"')
+            output.append(f'XA="{fmt(op["xa"])}"')
+            output.append(f'YA="{fmt(op["ya"])}"')
             output.append(f'TI="{fmt(op["depth"])}"')
             output.append(f'TNO="{op["tool"]}"')
             output.append(f'BM="SS"')
@@ -1456,24 +1314,12 @@ def fmt(value):
 
 
 def generate_gcode(objectslist):
-    """Generate standard G-code from FreeCAD Path objects using parallel post processor.
-    
-    NOTE: This function does NOT apply coordinate system offsets (G54, G55, etc.).
-    G-code coordinates remain unchanged regardless of COORDINATE_SYSTEM setting.
-    Only MPR format applies coordinate offsets.
-    """
+    """Generate standard G-code from FreeCAD Path objects using parallel post processor."""
     try:
         # Import the parallel G-code post processor
         import woodwop_gcode_post
         # Generate G-code using the dedicated post processor
         gcode_content = woodwop_gcode_post.export(objectslist, "-", "--no-show-editor --no-header")
-        # Ensure we return a string, not bool or None
-        if isinstance(gcode_content, bool):
-            print(f"[WoodWOP WARNING] G-code post processor returned bool: {gcode_content}, using fallback")
-            raise ValueError("G-code post processor returned bool instead of string")
-        if not gcode_content or not isinstance(gcode_content, str):
-            print(f"[WoodWOP WARNING] G-code post processor returned invalid type: {type(gcode_content)}, using fallback")
-            raise ValueError(f"G-code post processor returned invalid type: {type(gcode_content)}")
         return gcode_content
     except Exception as e:
         print(f"[WoodWOP WARNING] Failed to use parallel G-code post processor: {e}")
