@@ -1186,8 +1186,24 @@ def extract_contour_from_path(obj):
         params = cmd.Parameters
 
         # Update position
-        x = params.get('X', current_x)
-        y = params.get('Y', current_y)
+        # Check if X and Y are explicitly provided in the command
+        has_x = 'X' in params
+        has_y = 'Y' in params
+        has_z = 'Z' in params
+        
+        # If this is the first movement command and only Z is provided (X and Y are not),
+        # set X and Y to 0 (they will be adjusted by G54 offset later if needed)
+        is_first_movement = (start_x is None and cmd.Name in ['G0', 'G00', 'G1', 'G01', 'G2', 'G02', 'G3', 'G03'])
+        
+        if is_first_movement and has_z and not has_x and not has_y:
+            # First movement command with only Z provided, X and Y should be 0
+            # (will be adjusted by G54 offset later if needed)
+            x = 0.0
+            y = 0.0
+        else:
+            # Standard G-code behavior: if X/Y not provided, use current position
+            x = params.get('X', current_x)
+            y = params.get('Y', current_y)
         z = params.get('Z', current_z)
 
         # Track G0 rapid movements if ENABLE_G0_START is enabled
@@ -1204,9 +1220,11 @@ def extract_contour_from_path(obj):
                 start_x, start_y, start_z = g0_before_start
                 print(f"[WoodWOP DEBUG] Using G0 position as contour start: X={start_x:.3f}, Y={start_y:.3f}, Z={start_z:.3f}")
             else:
-                start_x = current_x
-                start_y = current_y
-                start_z = current_z
+                # Use coordinates from the first movement command (x, y, z), not current_x/y/z
+                # which haven't been updated yet
+                start_x = x
+                start_y = y
+                start_z = z
 
         # Linear move (G1) - create line
         if cmd.Name in ['G1', 'G01']:
@@ -1605,9 +1623,22 @@ def generate_mpr_content():
         # Add starting point ($E0 KP) - always required for contours
         start_x, start_y, start_z = contour.get('start_pos', (0.0, 0.0, 0.0))
         
-        # Apply coordinate offset if G54 or other coordinate system is set
-        start_x += COORDINATE_OFFSET_X
-        start_y += COORDINATE_OFFSET_Y
+        # If X and Y are 0 (not defined in command), set them based on G54 offset
+        # Without G54: X and Y remain 0
+        # With G54: X and Y are set to the offset values
+        if start_x == 0.0 and start_y == 0.0:
+            # X and Y were not defined in the command
+            if COORDINATE_SYSTEM:
+                # With G54: use offset values
+                start_x = COORDINATE_OFFSET_X
+                start_y = COORDINATE_OFFSET_Y
+            # Without G54: X and Y remain 0 (already set)
+        else:
+            # X and Y were defined in the command, apply offset if G54 is set
+            if COORDINATE_SYSTEM:
+                start_x += COORDINATE_OFFSET_X
+                start_y += COORDINATE_OFFSET_Y
+        
         # Apply Z offset only if USE_Z_FROM_JOB is False
         if not USE_Z_FROM_JOB:
             start_z += COORDINATE_OFFSET_Z
@@ -1684,8 +1715,6 @@ def generate_mpr_content():
                 output.append(f'.Z={fmt(first_elem_z)}')
                 output.append(f'.WI={fmt(wi_angle)}')
                 output.append(f'.WZ={fmt(wz_angle)}')
-                if OUTPUT_COMMENTS:
-                    output.append('KM="G0 Rapid Move to Start"')
                 output.append('')
                 
                 # Update previous point for next element (use first element position)
