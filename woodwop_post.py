@@ -26,10 +26,12 @@ TOOLTIP_ARGS = '''
 --workpiece-width=Y: Workpiece width in mm (default: auto-detect)
 --workpiece-thickness=Z: Workpiece thickness in mm (default: auto-detect)
 --use-part-name: Name .mpr file after the part/body name instead of document name
---g54: Set coordinate system offset to minimum part coordinates
+--g54: Set coordinate system offset to minimum part coordinates (legacy flag)
   When set, MPR coordinates will be offset by minimum part coordinates (X, Y, Z).
   Origin (0,0,0) will be at the minimum point of the part.
   NOTE: G-code output is NOT affected and remains unchanged.
+  PREFERRED: Use Work Coordinate Systems (Fixtures) in Job settings instead of this flag.
+  If G54 is checked in Job settings, it will automatically be used.
 '''
 
 # File extension for WoodWOP MPR files
@@ -164,8 +166,9 @@ def export(objectslist, filename, argstring):
             elif arg.startswith('--workpiece-thickness='):
                 WORKPIECE_THICKNESS = float(arg.split('=')[1])
             elif arg in ['--g54', '--G54']:
+                # Legacy flag support - will be overridden by Job.Fixtures if present
                 COORDINATE_SYSTEM = 'G54'
-                print(f"[WoodWOP DEBUG] Coordinate system set to G54 (minimum part coordinates)")
+                print(f"[WoodWOP DEBUG] Coordinate system set to G54 via --g54 flag (legacy mode)")
 
     # Get Job and extract base filename from settings or part name
     job = None
@@ -181,6 +184,28 @@ def export(objectslist, filename, argstring):
                 if hasattr(obj, 'PostProcessorOutputFile'):
                     job_output_file = obj.PostProcessorOutputFile
                     print(f"[WoodWOP DEBUG] Found PostProcessorOutputFile in Job: {job_output_file}")
+                
+                # Check Work Coordinate Systems (Fixtures) from Job
+                # This is the primary way to determine if G54 (or other WCS) should be used
+                if hasattr(obj, 'Fixtures') and obj.Fixtures:
+                    fixtures_list = obj.Fixtures
+                    print(f"[WoodWOP DEBUG] Found Fixtures in Job: {fixtures_list}")
+                    # Check if G54 is in the list
+                    if 'G54' in fixtures_list:
+                        COORDINATE_SYSTEM = 'G54'
+                        print(f"[WoodWOP DEBUG] G54 found in Job.Fixtures - coordinate system set to G54 (minimum part coordinates)")
+                    elif len(fixtures_list) > 0:
+                        # Use first fixture if G54 is not present (for future support of G55-G59)
+                        first_fixture = fixtures_list[0]
+                        if first_fixture.startswith('G5'):
+                            COORDINATE_SYSTEM = first_fixture
+                            print(f"[WoodWOP DEBUG] {first_fixture} found in Job.Fixtures - coordinate system set to {first_fixture}")
+                        else:
+                            print(f"[WoodWOP DEBUG] Fixture '{first_fixture}' found but not supported yet (only G54-G59 supported)")
+                    else:
+                        print(f"[WoodWOP DEBUG] Fixtures list is empty - using project coordinate system")
+                else:
+                    print(f"[WoodWOP DEBUG] Fixtures property not found in Job - checking legacy --g54 flag")
                 
                 # Try to get Model property from Job
                 if hasattr(obj, 'Model'):
@@ -262,6 +287,28 @@ def export(objectslist, filename, argstring):
                         if hasattr(obj, 'PostProcessorOutputFile'):
                             job_output_file = obj.PostProcessorOutputFile
                             print(f"[WoodWOP DEBUG] Found PostProcessorOutputFile in ActiveDocument Job: {job_output_file}")
+                        
+                        # Check Work Coordinate Systems (Fixtures) from Job
+                        # This is the primary way to determine if G54 (or other WCS) should be used
+                        if hasattr(obj, 'Fixtures') and obj.Fixtures:
+                            fixtures_list = obj.Fixtures
+                            print(f"[WoodWOP DEBUG] Found Fixtures in ActiveDocument Job: {fixtures_list}")
+                            # Check if G54 is in the list
+                            if 'G54' in fixtures_list:
+                                COORDINATE_SYSTEM = 'G54'
+                                print(f"[WoodWOP DEBUG] G54 found in ActiveDocument Job.Fixtures - coordinate system set to G54 (minimum part coordinates)")
+                            elif len(fixtures_list) > 0:
+                                # Use first fixture if G54 is not present (for future support of G55-G59)
+                                first_fixture = fixtures_list[0]
+                                if first_fixture.startswith('G5'):
+                                    COORDINATE_SYSTEM = first_fixture
+                                    print(f"[WoodWOP DEBUG] {first_fixture} found in ActiveDocument Job.Fixtures - coordinate system set to {first_fixture}")
+                                else:
+                                    print(f"[WoodWOP DEBUG] Fixture '{first_fixture}' found but not supported yet (only G54-G59 supported)")
+                            else:
+                                print(f"[WoodWOP DEBUG] Fixtures list is empty - using project coordinate system")
+                        else:
+                            print(f"[WoodWOP DEBUG] Fixtures property not found in ActiveDocument Job - checking legacy --g54 flag")
                         
                         # Try to get Model property from Job
                         if not job_model:
@@ -1080,6 +1127,12 @@ def calculate_part_minimum():
     This finds the minimum point (intersection of minimum X, Y, Z) which will be used
     as the origin (0,0,0) when G54 or other coordinate system flags are set.
     
+    The function checks:
+    - Start positions of all contours
+    - All line and arc end points
+    - Arc center points (for complete arc coverage)
+    - Drilling operation positions
+    
     Returns:
         tuple: (min_x, min_y, min_z) or (0.0, 0.0, 0.0) if no coordinates found
     """
@@ -1089,8 +1142,10 @@ def calculate_part_minimum():
     min_y = None
     min_z = None
     
+    points_checked = 0
+    
     # Check all contour elements
-    for contour in contours:
+    for contour_idx, contour in enumerate(contours):
         # Check start position
         start_x, start_y, start_z = contour.get('start_pos', (0.0, 0.0, 0.0))
         if min_x is None or start_x < min_x:
@@ -1099,19 +1154,59 @@ def calculate_part_minimum():
             min_y = start_y
         if min_z is None or start_z < min_z:
             min_z = start_z
+        points_checked += 1
+        
+        # Track previous point for arc center calculation
+        prev_x = start_x
+        prev_y = start_y
+        prev_z = start_z
         
         # Check all elements in contour
-        for elem in contour.get('elements', []):
+        for elem_idx, elem in enumerate(contour.get('elements', [])):
             x = elem.get('x', 0.0)
             y = elem.get('y', 0.0)
             z = elem.get('z', 0.0)
             
+            # Check end point
             if min_x is None or x < min_x:
                 min_x = x
             if min_y is None or y < min_y:
                 min_y = y
             if min_z is None or z < min_z:
                 min_z = z
+            points_checked += 1
+            
+            # For arcs, also check center point (I, J are relative to previous point)
+            if elem.get('type') == 'KA':  # Arc element
+                center_x = prev_x + elem.get('i', 0.0)
+                center_y = prev_y + elem.get('j', 0.0)
+                center_z = prev_z  # Arc center Z is same as previous Z for XY plane arcs
+                
+                # Check center point
+                if min_x is None or center_x < min_x:
+                    min_x = center_x
+                if min_y is None or center_y < min_y:
+                    min_y = center_y
+                if min_z is None or center_z < min_z:
+                    min_z = center_z
+                points_checked += 1
+                
+                # For arcs, also check if radius extends beyond end point
+                # Calculate arc extent (center ± radius)
+                radius = elem.get('r', 0.0)
+                if radius > 0.001:
+                    # Check X extent
+                    arc_min_x = center_x - radius
+                    arc_min_y = center_y - radius
+                    if min_x is None or arc_min_x < min_x:
+                        min_x = arc_min_x
+                    if min_y is None or arc_min_y < min_y:
+                        min_y = arc_min_y
+            
+            # Update previous point for next iteration
+            prev_x = x
+            prev_y = y
+            prev_z = z
     
     # Check all drilling operations
     for op in operations:
@@ -1128,11 +1223,18 @@ def calculate_part_minimum():
                 min_y = ya
             if min_z is None or z < min_z:
                 min_z = z
+            points_checked += 1
+    
+    # Log calculation details
+    print(f"[WoodWOP DEBUG] calculate_part_minimum(): checked {points_checked} points")
+    print(f"[WoodWOP DEBUG]   Contours: {len(contours)}, Operations: {len(operations)}")
     
     # Return minimum coordinates or (0,0,0) if nothing found
     if min_x is None:
+        print(f"[WoodWOP DEBUG]   No coordinates found, returning (0.0, 0.0, 0.0)")
         return (0.0, 0.0, 0.0)
     
+    print(f"[WoodWOP DEBUG]   Minimum found: X={min_x:.3f}, Y={min_y:.3f}, Z={min_z:.3f}")
     return (min_x, min_y, min_z)
 
 
