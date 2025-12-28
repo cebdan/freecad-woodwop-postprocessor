@@ -1678,8 +1678,9 @@ def generate_mpr_content():
     # End of file
     output.append('!')
     
-    # Return the complete MPR content as a string
-    return '\n'.join(output)
+    # Return the complete MPR content as a string with CRLF line endings
+    # MPR format requires CRLF (\r\n) for Windows compatibility
+    return '\r\n'.join(output)
 
 
 def fmt(value):
