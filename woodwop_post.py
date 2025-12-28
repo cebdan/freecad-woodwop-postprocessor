@@ -41,6 +41,10 @@ TOOLTIP_ARGS = '''
 --nc or /nc: Enable NC (G-code) file output
   When set, both MPR and NC files will be created.
   If not set, only MPR file will be created.
+--p_c or /p_c or --p-c or /p-c: Enable Path Commands export
+  When set, a detailed path commands file (_path_commands.txt) will be created.
+  The file contains all Path Commands from all operations for debugging and analysis.
+  If not set, no path commands file will be generated.
 '''
 
 # File extension for WoodWOP MPR files
@@ -77,6 +81,9 @@ ENABLE_JOB_REPORT = False  # Set to True via /report or --report flag to enable 
 
 # NC file output flag
 OUTPUT_NC_FILE = False  # Set to True via /nc or --nc flag to enable G-code output
+
+# Path commands export flag
+ENABLE_PATH_COMMANDS_EXPORT = False  # Set to True via /p_c or --p_c flag to enable path commands export
 
 # Tracking
 contour_counter = 1
@@ -116,12 +123,13 @@ def export(objectslist, filename, argstring):
     global STOCK_EXTENT_X, STOCK_EXTENT_Y
     global contour_counter, contours, operations, tools_used
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
-    global ENABLE_VERBOSE_LOGGING, ENABLE_JOB_REPORT, OUTPUT_NC_FILE
+    global ENABLE_VERBOSE_LOGGING, ENABLE_JOB_REPORT, OUTPUT_NC_FILE, ENABLE_PATH_COMMANDS_EXPORT
     
     # Reset flags
     ENABLE_VERBOSE_LOGGING = False
     ENABLE_JOB_REPORT = False
     OUTPUT_NC_FILE = False
+    ENABLE_PATH_COMMANDS_EXPORT = False
     
     # Debug output - use both print() and FreeCAD.Console to ensure visibility
     debug_log("[WoodWOP DEBUG] ===== export() called =====")
@@ -240,6 +248,16 @@ def export(objectslist, filename, argstring):
                 if current_module:
                     current_module.OUTPUT_NC_FILE = True
                     print(f"[WoodWOP] Updated module.OUTPUT_NC_FILE = {current_module.OUTPUT_NC_FILE}")
+            elif arg in ['--p_c', '--p-c'] or normalized_arg in ['p_c', 'p-c']:
+                ENABLE_PATH_COMMANDS_EXPORT = True
+                print(f"[WoodWOP] Path commands export enabled via {arg} flag")
+                print(f"[WoodWOP] ENABLE_PATH_COMMANDS_EXPORT = True")
+                # Update global variable
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.ENABLE_PATH_COMMANDS_EXPORT = True
+                    print(f"[WoodWOP] Updated module.ENABLE_PATH_COMMANDS_EXPORT = {current_module.ENABLE_PATH_COMMANDS_EXPORT}")
             else:
                 print(f"[WoodWOP] Unknown argument: '{arg}' (normalized: '{normalized_arg}')")
     else:
@@ -250,6 +268,7 @@ def export(objectslist, filename, argstring):
     print(f"[WoodWOP]   OUTPUT_NC_FILE = {OUTPUT_NC_FILE}")
     print(f"[WoodWOP]   ENABLE_VERBOSE_LOGGING = {ENABLE_VERBOSE_LOGGING}")
     print(f"[WoodWOP]   ENABLE_JOB_REPORT = {ENABLE_JOB_REPORT}")
+    print(f"[WoodWOP]   ENABLE_PATH_COMMANDS_EXPORT = {ENABLE_PATH_COMMANDS_EXPORT}")
 
     # Get Job and extract base filename from settings or part name
     job = None
@@ -1749,6 +1768,106 @@ def generate_gcode(objectslist):
         gcode_lines.append("")
         
         return "\n".join(gcode_lines)
+
+
+def export_path_commands(objectslist, output_filename):
+    """Export all Path Commands from all operations to a text file.
+    
+    Args:
+        objectslist: List of FreeCAD Path objects to process
+        output_filename: Full path to the output file
+    
+    Returns:
+        bool: True if file was created successfully, False otherwise
+    """
+    try:
+        import datetime
+        from PathScripts import PathUtils
+        
+        output_lines = []
+        output_lines.append("=" * 80)
+        output_lines.append("FreeCAD Path Commands Export")
+        output_lines.append("=" * 80)
+        output_lines.append(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        output_lines.append(f"Post Processor: WoodWOP MPR")
+        output_lines.append("")
+        
+        operation_count = 0
+        total_commands = 0
+        
+        # Process all path objects
+        for obj in objectslist:
+            if not hasattr(obj, "Path"):
+                continue
+            
+            # Get operation info
+            op_label = obj.Label if hasattr(obj, 'Label') else 'Unknown'
+            op_type = get_operation_type(obj)
+            tool_number = get_tool_number(obj)
+            
+            output_lines.append("-" * 80)
+            output_lines.append(f"Operation: {op_label}")
+            output_lines.append(f"Type: {op_type}")
+            output_lines.append(f"Tool: {tool_number}")
+            output_lines.append("-" * 80)
+            output_lines.append("")
+            
+            # Get path commands
+            try:
+                path_commands = PathUtils.getPathWithPlacement(obj).Commands
+            except:
+                path_commands = obj.Path.Commands if hasattr(obj.Path, 'Commands') else []
+            
+            if not path_commands:
+                output_lines.append("(No commands found)")
+                output_lines.append("")
+                continue
+            
+            # Export all commands
+            command_num = 0
+            for cmd in path_commands:
+                command_num += 1
+                total_commands += 1
+                
+                # Format command line
+                line = f"{command_num:4d}. {cmd.Name}"
+                
+                # Add parameters
+                if cmd.Parameters:
+                    for param, value in sorted(cmd.Parameters.items()):
+                        line += f" {param}{fmt(value)}"
+                
+                output_lines.append(line)
+            
+            output_lines.append("")
+            output_lines.append(f"Total commands in this operation: {command_num}")
+            output_lines.append("")
+            operation_count += 1
+        
+        # Summary
+        output_lines.append("=" * 80)
+        output_lines.append("Summary")
+        output_lines.append("=" * 80)
+        output_lines.append(f"Total operations: {operation_count}")
+        output_lines.append(f"Total commands: {total_commands}")
+        output_lines.append("")
+        output_lines.append("=" * 80)
+        output_lines.append("End of Export")
+        output_lines.append("=" * 80)
+        
+        # Write to file
+        with open(output_filename, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('\n'.join(output_lines))
+        
+        print(f"[WoodWOP] Path commands exported to: {output_filename}")
+        print(f"[WoodWOP]   Operations: {operation_count}, Commands: {total_commands}")
+        return True
+        
+    except Exception as e:
+        print(f"[WoodWOP ERROR] Failed to export path commands: {e}")
+        import traceback
+        print(f"[WoodWOP ERROR] Traceback:\n{traceback.format_exc()}")
+        return False
 
 
 def linenumber():
