@@ -125,11 +125,61 @@ def export(objectslist, filename, argstring):
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
     global ENABLE_VERBOSE_LOGGING, ENABLE_JOB_REPORT, OUTPUT_NC_FILE, ENABLE_PATH_COMMANDS_EXPORT
     
-    # Reset flags
+    # Reset flags first
     ENABLE_VERBOSE_LOGGING = False
     ENABLE_JOB_REPORT = False
     OUTPUT_NC_FILE = False
     ENABLE_PATH_COMMANDS_EXPORT = False
+    
+    # Parse arguments FIRST to set flags before any other operations
+    # This is critical for /log flag to work correctly with FilenameGenerator
+    if argstring:
+        print(f"[WoodWOP] Parsing arguments: '{argstring}'")
+        args = argstring.split()
+        print(f"[WoodWOP] Split into {len(args)} arguments: {args}")
+        for arg in args:
+            # Normalize argument to handle both -- and / formats
+            normalized_arg = arg.lstrip('-').lstrip('/')
+            print(f"[WoodWOP] Processing argument: '{arg}' (normalized: '{normalized_arg}')")
+            
+            if arg == '--log' or normalized_arg == 'log':
+                ENABLE_VERBOSE_LOGGING = True
+                print(f"[WoodWOP] Verbose logging enabled via {arg} flag")
+                print(f"[WoodWOP] ENABLE_VERBOSE_LOGGING = True")
+                # Update global variable
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.ENABLE_VERBOSE_LOGGING = True
+            elif arg == '--report' or normalized_arg == 'report':
+                ENABLE_JOB_REPORT = True
+                print(f"[WoodWOP] Job report generation enabled via {arg} flag")
+                print(f"[WoodWOP] ENABLE_JOB_REPORT = True")
+                # Update global variable
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.ENABLE_JOB_REPORT = True
+            elif arg == '--nc' or normalized_arg == 'nc':
+                OUTPUT_NC_FILE = True
+                print(f"[WoodWOP] NC file output enabled via {arg} flag")
+                print(f"[WoodWOP] OUTPUT_NC_FILE = True")
+                # Update global variable
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.OUTPUT_NC_FILE = True
+                    print(f"[WoodWOP] Updated module.OUTPUT_NC_FILE = {current_module.OUTPUT_NC_FILE}")
+            elif arg in ['--p_c', '--p-c'] or normalized_arg in ['p_c', 'p-c']:
+                ENABLE_PATH_COMMANDS_EXPORT = True
+                print(f"[WoodWOP] Path commands export enabled via {arg} flag")
+                print(f"[WoodWOP] ENABLE_PATH_COMMANDS_EXPORT = True")
+                # Update global variable
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.ENABLE_PATH_COMMANDS_EXPORT = True
+                    print(f"[WoodWOP] Updated module.ENABLE_PATH_COMMANDS_EXPORT = {current_module.ENABLE_PATH_COMMANDS_EXPORT}")
     
     # Debug output - use both print() and FreeCAD.Console to ensure visibility
     debug_log("[WoodWOP DEBUG] ===== export() called =====")
@@ -183,15 +233,12 @@ def export(objectslist, filename, argstring):
     operations = []
     tools_used = set()
 
-    # Parse arguments
+    # Continue parsing remaining arguments (non-flag arguments)
     if argstring:
-        print(f"[WoodWOP] Parsing arguments: '{argstring}'")
         args = argstring.split()
-        print(f"[WoodWOP] Split into {len(args)} arguments: {args}")
         for arg in args:
             # Normalize argument to handle both -- and / formats
             normalized_arg = arg.lstrip('-').lstrip('/')
-            print(f"[WoodWOP] Processing argument: '{arg}' (normalized: '{normalized_arg}')")
             
             if arg == '--no-comments' or normalized_arg == 'no-comments':
                 OUTPUT_COMMENTS = False
@@ -220,48 +267,6 @@ def export(objectslist, filename, argstring):
                 COORDINATE_SYSTEM = 'G54'
                 print(f"[WoodWOP] COORDINATE_SYSTEM = G54 (via {arg} flag)")
                 debug_log(f"[WoodWOP DEBUG] Coordinate system set to G54 via {arg} flag (legacy mode)")
-            elif arg == '--log' or normalized_arg == 'log':
-                ENABLE_VERBOSE_LOGGING = True
-                print(f"[WoodWOP] Verbose logging enabled via {arg} flag")
-                print(f"[WoodWOP] ENABLE_VERBOSE_LOGGING = True")
-                # Update global variable
-                import sys
-                current_module = sys.modules.get(__name__)
-                if current_module:
-                    current_module.ENABLE_VERBOSE_LOGGING = True
-            elif arg == '--report' or normalized_arg == 'report':
-                ENABLE_JOB_REPORT = True
-                print(f"[WoodWOP] Job report generation enabled via {arg} flag")
-                print(f"[WoodWOP] ENABLE_JOB_REPORT = True")
-                # Update global variable
-                import sys
-                current_module = sys.modules.get(__name__)
-                if current_module:
-                    current_module.ENABLE_JOB_REPORT = True
-            elif arg == '--nc' or normalized_arg == 'nc':
-                OUTPUT_NC_FILE = True
-                print(f"[WoodWOP] NC file output enabled via {arg} flag")
-                print(f"[WoodWOP] OUTPUT_NC_FILE = True")
-                # Update global variable
-                import sys
-                current_module = sys.modules.get(__name__)
-                if current_module:
-                    current_module.OUTPUT_NC_FILE = True
-                    print(f"[WoodWOP] Updated module.OUTPUT_NC_FILE = {current_module.OUTPUT_NC_FILE}")
-            elif arg in ['--p_c', '--p-c'] or normalized_arg in ['p_c', 'p-c']:
-                ENABLE_PATH_COMMANDS_EXPORT = True
-                print(f"[WoodWOP] Path commands export enabled via {arg} flag")
-                print(f"[WoodWOP] ENABLE_PATH_COMMANDS_EXPORT = True")
-                # Update global variable
-                import sys
-                current_module = sys.modules.get(__name__)
-                if current_module:
-                    current_module.ENABLE_PATH_COMMANDS_EXPORT = True
-                    print(f"[WoodWOP] Updated module.ENABLE_PATH_COMMANDS_EXPORT = {current_module.ENABLE_PATH_COMMANDS_EXPORT}")
-            else:
-                print(f"[WoodWOP] Unknown argument: '{arg}' (normalized: '{normalized_arg}')")
-    else:
-        print(f"[WoodWOP] No arguments provided (argstring is empty or None)")
     
     # Debug: Print final flag values
     print(f"[WoodWOP] Final flag values after parsing:")
