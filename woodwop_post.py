@@ -1146,7 +1146,11 @@ def extract_contour_from_path(obj):
         # G0 (rapid move) - always treat as G1 (linear move)
         if cmd.Name in ['G0', 'G00']:
             # Check if there is actual movement (dX, dY, or dZ)
-            if abs(x - current_x) > 0.001 or abs(y - current_y) > 0.001 or abs(z - current_z) > 0.001:
+            # Skip if all movements are less than 0.001 (no actual movement)
+            dx = abs(x - current_x)
+            dy = abs(y - current_y)
+            dz = abs(z - current_z)
+            if not (dx < 0.001 and dy < 0.001 and dz < 0.001):
                 line_elem = {
                     'type': 'KL',  # Line
                     'x': x,
@@ -1157,7 +1161,12 @@ def extract_contour_from_path(obj):
 
         # Linear move (G1) - create line
         elif cmd.Name in ['G1', 'G01']:
-            if abs(x - current_x) > 0.001 or abs(y - current_y) > 0.001:
+            # Check if there is actual movement (dX, dY, or dZ)
+            # Skip if all movements are less than 0.001 (no actual movement)
+            dx = abs(x - current_x)
+            dy = abs(y - current_y)
+            dz = abs(z - current_z)
+            if not (dx < 0.001 and dy < 0.001 and dz < 0.001):
                 line_elem = {
                     'type': 'KL',  # Line
                     'x': x,
