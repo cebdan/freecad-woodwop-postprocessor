@@ -1143,8 +1143,20 @@ def extract_contour_from_path(obj):
             start_y = current_y
             start_z = current_z
 
+        # G0 (rapid move) - always treat as G1 (linear move)
+        if cmd.Name in ['G0', 'G00']:
+            # Check if there is actual movement (dX, dY, or dZ)
+            if abs(x - current_x) > 0.001 or abs(y - current_y) > 0.001 or abs(z - current_z) > 0.001:
+                line_elem = {
+                    'type': 'KL',  # Line
+                    'x': x,
+                    'y': y,
+                    'z': z  # Always include Z coordinate
+                }
+                elements.append(line_elem)
+
         # Linear move (G1) - create line
-        if cmd.Name in ['G1', 'G01']:
+        elif cmd.Name in ['G1', 'G01']:
             if abs(x - current_x) > 0.001 or abs(y - current_y) > 0.001:
                 line_elem = {
                     'type': 'KL',  # Line
