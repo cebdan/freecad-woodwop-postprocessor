@@ -1648,6 +1648,34 @@ def generate_mpr_content():
                 # Determine if arc is small (<=180°) or large (>180°)
                 is_small_arc = arc_angle <= math.pi
                 
+                # Get radius
+                radius = elem.get('r', 0.0)
+                if radius <= 0.001:
+                    # Calculate radius from center to start point
+                    radius = math.sqrt((prev_elem_x - center_x)**2 + (prev_elem_y - center_y)**2)
+                
+                # Special check for 180° arcs: verify feasibility
+                # For 180° arc, radius cannot be smaller than half the chord length
+                # Example: from (0,0) to (100,0) with radius 49.999 is impossible
+                # Minimum radius must be at least chord_length / 2
+                if abs(arc_angle - math.pi) < 0.001:  # Arc is approximately 180°
+                    # Calculate chord length (distance between start and end points)
+                    chord_length = math.sqrt((elem_x - prev_elem_x)**2 + (elem_y - prev_elem_y)**2)
+                    
+                    # Check if radius is feasible: chord_length >= 2 * radius
+                    # If radius is too small, increase it to minimum required
+                    if chord_length >= 2 * radius:
+                        # Radius is OK, no correction needed
+                        pass
+                    else:
+                        # Radius is too small, adjust it to minimum: chord_length / 2
+                        radius = chord_length / 2.0
+                        
+                        # Re-check after adjustment (for rounding errors)
+                        if chord_length < 2 * radius:
+                            # Still too small due to rounding, add small margin
+                            radius = chord_length / 2.0 + 0.001
+                
                 # Calculate DS value based on direction and arc size
                 # DS=0: CW small arc (<=180°)
                 # DS=1: CCW small arc (<=180°)
@@ -1657,12 +1685,6 @@ def generate_mpr_content():
                     ds_value = 0 if is_small_arc else 2
                 else:  # CCW
                     ds_value = 1 if is_small_arc else 3
-                
-                # Get radius
-                radius = elem.get('r', 0.0)
-                if radius <= 0.001:
-                    # Calculate radius from center to start point
-                    radius = math.sqrt((prev_elem_x - center_x)**2 + (prev_elem_y - center_y)**2)
                 
                 # Main block: only X, Y, Z, DS, R (no I, J)
                 output.append('KA ')
