@@ -1626,39 +1626,61 @@ def generate_mpr_content():
                 elem_y = elem['y'] + COORDINATE_OFFSET_Y
                 z_value = elem.get('z', 0.0) + COORDINATE_OFFSET_Z
                 
-                output.append('KA ')
-                output.append(f'X={fmt(elem_x)}')
-                output.append(f'Y={fmt(elem_y)}')
-                output.append(f'Z={fmt(z_value)}')
-                
-                direction = elem.get('direction', 'CW')
-                ds_value = 1 if direction == 'CCW' else 0
-                output.append(f'DS={ds_value}')
-                
-                if 'r' in elem and elem['r'] > 0.001:
-                    output.append(f'R={fmt(elem["r"])}')
-                
-                # Calculate arc angles
+                # Calculate arc center from I, J offsets
                 center_x = prev_elem_x + elem.get('i', 0)
                 center_y = prev_elem_y + elem.get('j', 0)
                 
+                # Calculate start and end angles
                 start_angle = math.atan2(prev_elem_y - center_y, prev_elem_x - center_x)
                 end_angle = math.atan2(elem_y - center_y, elem_x - center_x)
                 
+                direction = elem.get('direction', 'CW')
+                
+                # Normalize angles based on direction
                 if direction == 'CCW' and end_angle < start_angle:
                     end_angle += 2 * math.pi
                 elif direction == 'CW' and end_angle > start_angle:
                     end_angle -= 2 * math.pi
                 
-                waz_angle = 0.0
+                # Calculate arc angle in radians
+                arc_angle = abs(end_angle - start_angle)
                 
+                # Determine if arc is small (<=180°) or large (>180°)
+                is_small_arc = arc_angle <= math.pi
+                
+                # Calculate DS value based on direction and arc size
+                # DS=0: CW small arc (<=180°)
+                # DS=1: CCW small arc (<=180°)
+                # DS=2: CW large arc (>180°)
+                # DS=3: CCW large arc (>180°)
+                if direction == 'CW':
+                    ds_value = 0 if is_small_arc else 2
+                else:  # CCW
+                    ds_value = 1 if is_small_arc else 3
+                
+                # Get radius
+                radius = elem.get('r', 0.0)
+                if radius <= 0.001:
+                    # Calculate radius from center to start point
+                    radius = math.sqrt((prev_elem_x - center_x)**2 + (prev_elem_y - center_y)**2)
+                
+                # Main block: only X, Y, Z, DS, R (no I, J)
+                output.append('KA ')
+                output.append(f'X={fmt(elem_x)}')
+                output.append(f'Y={fmt(elem_y)}')
+                output.append(f'Z={fmt(z_value)}')
+                output.append(f'DS={ds_value}')
+                output.append(f'R={fmt(radius)}')
+                
+                # Calculated block: all parameters for compatibility
+                waz_angle = 0.0
                 output.append(f'.X={fmt(elem_x)}')
                 output.append(f'.Y={fmt(elem_y)}')
                 output.append(f'.Z={fmt(z_value)}')
                 output.append(f'.I={fmt(center_x)}')
                 output.append(f'.J={fmt(center_y)}')
                 output.append(f'.DS={ds_value}')
-                output.append(f'.R={fmt(elem.get("r", 0.0))}')
+                output.append(f'.R={fmt(radius)}')
                 output.append(f'.WI={fmt(start_angle)}')
                 output.append(f'.WO={fmt(end_angle)}')
                 output.append(f'.WAZ={fmt(waz_angle)}')
