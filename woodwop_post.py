@@ -712,7 +712,17 @@ def export(objectslist, filename, argstring):
         print(f"[WoodWOP ERROR] generate_mpr_content() returned {type(mpr_content)} instead of string: {mpr_content}")
         raise ValueError(f"generate_mpr_content() returned {type(mpr_content)} instead of string")
     print(f"[WoodWOP DEBUG] Generated {len(mpr_content)} characters")
-    print(f"[WoodWOP DEBUG] First 200 chars of MPR: {mpr_content[:200]}")
+    print(f"[WoodWOP DEBUG] First 500 chars of MPR: {mpr_content[:500]}")
+    
+    # CRITICAL: Check if mpr_content is empty
+    if len(mpr_content) == 0:
+        error_msg = "[WoodWOP CRITICAL ERROR] mpr_content is EMPTY! File will be empty!"
+        print(error_msg)
+        try:
+            import FreeCAD
+            FreeCAD.Console.PrintError(f"{error_msg}\n")
+        except:
+            pass
     
     # Generate G-code content only if /nc flag is set
     print(f"[WoodWOP] Checking OUTPUT_NC_FILE before generating G-code: {OUTPUT_NC_FILE}")
@@ -743,15 +753,43 @@ def export(objectslist, filename, argstring):
         print(f"[WoodWOP DEBUG] Returning only MPR format to FreeCAD")
         print(f"[WoodWOP DEBUG] MPR content type: {type(mpr_content)}, length: {len(mpr_content)} characters")
     
+    # CRITICAL: Ensure mpr_content is a string before building result
+    if not isinstance(mpr_content, str):
+        error_msg = f"[WoodWOP CRITICAL ERROR] mpr_content is not a string! Type: {type(mpr_content)}"
+        print(error_msg)
+        try:
+            import FreeCAD
+            FreeCAD.Console.PrintError(f"{error_msg}\n")
+        except:
+            pass
+        # Convert to string
+        mpr_content = str(mpr_content) if mpr_content else ""
+        print(f"[WoodWOP DEBUG] Converted mpr_content to string, new length: {len(mpr_content)}")
+    
     # CRITICAL: Build result list and verify it's correct
     # Include NC file only if OUTPUT_NC_FILE flag is set
     print(f"[WoodWOP] Building result list, OUTPUT_NC_FILE = {OUTPUT_NC_FILE}")
+    print(f"[WoodWOP DEBUG] mpr_content type: {type(mpr_content)}, length: {len(mpr_content) if mpr_content else 0}")
+    
+    # CRITICAL: Verify mpr_content is not empty
+    if len(mpr_content) == 0:
+        error_msg = "[WoodWOP CRITICAL ERROR] mpr_content is EMPTY before building result!"
+        print(error_msg)
+        try:
+            import FreeCAD
+            FreeCAD.Console.PrintError(f"{error_msg}\n")
+        except:
+            pass
+    
     if OUTPUT_NC_FILE:
-        result = [("mpr", mpr_content), ("nc", gcode_content)]
+        result = [("mpr", str(mpr_content)), ("nc", str(gcode_content) if gcode_content else "")]
         print(f"[WoodWOP] Result list will contain 2 items: MPR and NC")
+        print(f"[WoodWOP DEBUG] MPR content length: {len(mpr_content) if mpr_content else 0}, NC content length: {len(gcode_content) if gcode_content else 0}")
     else:
-        result = [("mpr", mpr_content)]
+        result = [("mpr", str(mpr_content))]
         print(f"[WoodWOP] Result list will contain 1 item: MPR only")
+        print(f"[WoodWOP DEBUG] MPR content length: {len(mpr_content) if mpr_content else 0}")
+        print(f"[WoodWOP DEBUG] Result tuple content type: {type(result[0][1])}, length: {len(result[0][1]) if result[0][1] else 0}")
     
     # CRITICAL: Verify result is a list before returning
     if not isinstance(result, list):
@@ -1421,6 +1459,7 @@ def generate_mpr_content():
     global contours, operations, WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
     global STOCK_EXTENT_X, STOCK_EXTENT_Y, OUTPUT_COMMENTS, PRECISION, now
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
+    global PROGRAM_OFFSET_X, PROGRAM_OFFSET_Y, PROGRAM_OFFSET_Z
     
     output = []
     
@@ -1482,16 +1521,16 @@ def generate_mpr_content():
     output.append('INFO3=""')
     output.append('INFO4=""')
     output.append('INFO5=""')
-    output.append(f'_BSX={WORKPIECE_LENGTH:.6f}')
-    output.append(f'_BSY={WORKPIECE_WIDTH:.6f}')
-    output.append(f'_BSZ={WORKPIECE_THICKNESS:.6f}')
-    output.append(f'_FNX={STOCK_EXTENT_X:.6f}')
-    output.append(f'_FNY={STOCK_EXTENT_Y:.6f}')
-    output.append('_RNX=0.000000')
-    output.append('_RNY=0.000000')
-    output.append('_RNZ=0.000000')
-    output.append(f'_RX={(WORKPIECE_LENGTH + 2 * STOCK_EXTENT_X):.6f}')
-    output.append(f'_RY={(WORKPIECE_WIDTH + 2 * STOCK_EXTENT_Y):.6f}')
+    output.append(f'_BSX={fmt(WORKPIECE_LENGTH)}')
+    output.append(f'_BSY={fmt(WORKPIECE_WIDTH)}')
+    output.append(f'_BSZ={fmt(WORKPIECE_THICKNESS)}')
+    output.append(f'_FNX={fmt(STOCK_EXTENT_X)}')
+    output.append(f'_FNY={fmt(STOCK_EXTENT_Y)}')
+    output.append(f'_RNX={fmt(PROGRAM_OFFSET_X)}')
+    output.append(f'_RNY={fmt(PROGRAM_OFFSET_Y)}')
+    output.append(f'_RNZ={fmt(PROGRAM_OFFSET_Z)}')
+    output.append(f'_RX={fmt(WORKPIECE_LENGTH + 2 * STOCK_EXTENT_X)}')
+    output.append(f'_RY={fmt(WORKPIECE_WIDTH + 2 * STOCK_EXTENT_Y)}')
     output.append('')
     
     # Contour elements section
@@ -1612,27 +1651,27 @@ def generate_mpr_content():
         output.append('')
     
     # Variables and workpiece section
-    output.append('[001')
-    output.append(f'l="{fmt(WORKPIECE_LENGTH)}"')
+        output.append('[001')
+        output.append(f'l="{fmt(WORKPIECE_LENGTH)}"')
     if OUTPUT_COMMENTS:
         output.append('KM="Länge in X"')
-    output.append(f'w="{fmt(WORKPIECE_WIDTH)}"')
+        output.append(f'w="{fmt(WORKPIECE_WIDTH)}"')
     if OUTPUT_COMMENTS:
         output.append('KM="Breite in Y"')
-    output.append(f'th="{fmt(WORKPIECE_THICKNESS)}"')
+        output.append(f'th="{fmt(WORKPIECE_THICKNESS)}"')
     if OUTPUT_COMMENTS:
         output.append('KM="Dicke in Z"')
-    output.append('')
+        output.append('')
     
-    output.append(f'<100 \\WerkStck\\')
-    output.append(f'LA="l"')
-    output.append(f'BR="w"')
-    output.append(f'DI="th"')
-    output.append(f'FNX="{fmt(STOCK_EXTENT_X)}"')
-    output.append(f'FNY="{fmt(STOCK_EXTENT_Y)}"')
-    output.append(f'AX="0"')
-    output.append(f'AY="0"')
-    output.append('')
+        output.append(f'<100 \\WerkStck\\')
+        output.append(f'LA="l"')
+        output.append(f'BR="w"')
+        output.append(f'DI="th"')
+        output.append(f'FNX="{fmt(STOCK_EXTENT_X)}"')
+        output.append(f'FNY="{fmt(STOCK_EXTENT_Y)}"')
+        output.append(f'AX="0"')
+        output.append(f'AY="0"')
+        output.append('')
     
     if OUTPUT_COMMENTS:
         output.append('<101 \\Comment\\')
@@ -1678,9 +1717,41 @@ def generate_mpr_content():
     # End of file
     output.append('!')
     
+    # CRITICAL DEBUG: Check output before joining
+    print(f"[WoodWOP DEBUG] generate_mpr_content() output list length: {len(output)}")
+    if len(output) == 0:
+        error_msg = "[WoodWOP CRITICAL ERROR] output list is EMPTY! Nothing was added to output!"
+        print(error_msg)
+        try:
+            Path.Log.error(error_msg)
+        except:
+            pass
+        # Return minimal valid MPR file
+        minimal_mpr = '[H\r\nVERSION="4.0 Alpha"\r\n]H\r\n[001\r\nz_safe=20.0\r\n]001\r\n!'
+        print(f"[WoodWOP DEBUG] Returning minimal MPR file (length: {len(minimal_mpr)})")
+        return minimal_mpr
+    
     # Return the complete MPR content as a string with CRLF line endings
     # MPR format requires CRLF (\r\n) for Windows compatibility
-    return '\r\n'.join(output)
+    result = '\r\n'.join(output)
+    
+    print(f"[WoodWOP DEBUG] generate_mpr_content() result length: {len(result)} characters")
+    print(f"[WoodWOP DEBUG] First 500 chars of result: {result[:500]}")
+    
+    # Validate result is not empty
+    if len(result) == 0:
+        error_msg = "[WoodWOP CRITICAL ERROR] generate_mpr_content() result is EMPTY after join!"
+        print(error_msg)
+        try:
+            Path.Log.error(error_msg)
+        except:
+            pass
+        # Return minimal valid MPR file
+        minimal_mpr = '[H\r\nVERSION="4.0 Alpha"\r\n]H\r\n[001\r\nz_safe=20.0\r\n]001\r\n!'
+        print(f"[WoodWOP DEBUG] Returning minimal MPR file (length: {len(minimal_mpr)})")
+        return minimal_mpr
+    
+    return result
 
 
 def fmt(value):
