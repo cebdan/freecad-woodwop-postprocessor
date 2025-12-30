@@ -65,6 +65,11 @@ STOCK_EXTENT_X = 0.0
 STOCK_EXTENT_Y = 0.0
 USE_PART_NAME = False
 
+# Program offsets (for workpiece positioning in WoodWOP)
+PROGRAM_OFFSET_X = 0.0
+PROGRAM_OFFSET_Y = 0.0
+PROGRAM_OFFSET_Z = 0.0
+
 # Coordinate system offset (for G54, G55, etc.)
 # If set, coordinates will be offset by the minimum part coordinates
 # This is ONLY applied to MPR format, G-code remains unchanged
@@ -84,6 +89,12 @@ OUTPUT_NC_FILE = False  # Set to True via /nc or --nc flag to enable G-code outp
 
 # Path commands export flag
 ENABLE_PATH_COMMANDS_EXPORT = False  # Set to True via /p_c or --p_c flag to enable path commands export
+
+# Processing analysis export flag
+ENABLE_PROCESSING_ANALYSIS = False  # Set to True via /p_a or --p_a flag to enable processing analysis export
+
+# Processing analysis export flag
+ENABLE_PROCESSING_ANALYSIS = False  # Set to True via /p_a or --p_a flag to enable processing analysis export
 
 # Tracking
 contour_counter = 1
@@ -121,15 +132,17 @@ def export(objectslist, filename, argstring):
     global OUTPUT_COMMENTS, PRECISION
     global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS, USE_PART_NAME
     global STOCK_EXTENT_X, STOCK_EXTENT_Y
+    global PROGRAM_OFFSET_X, PROGRAM_OFFSET_Y, PROGRAM_OFFSET_Z
     global contour_counter, contours, operations, tools_used
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
-    global ENABLE_VERBOSE_LOGGING, ENABLE_JOB_REPORT, OUTPUT_NC_FILE, ENABLE_PATH_COMMANDS_EXPORT
+    global ENABLE_VERBOSE_LOGGING, ENABLE_JOB_REPORT, OUTPUT_NC_FILE, ENABLE_PATH_COMMANDS_EXPORT, ENABLE_PROCESSING_ANALYSIS
     
     # Reset flags first
     ENABLE_VERBOSE_LOGGING = False
     ENABLE_JOB_REPORT = False
     OUTPUT_NC_FILE = False
     ENABLE_PATH_COMMANDS_EXPORT = False
+    ENABLE_PROCESSING_ANALYSIS = False
     
     # Parse arguments FIRST to set flags before any other operations
     # This is critical for /log flag to work correctly with FilenameGenerator
@@ -180,6 +193,16 @@ def export(objectslist, filename, argstring):
                 if current_module:
                     current_module.ENABLE_PATH_COMMANDS_EXPORT = True
                     print(f"[WoodWOP] Updated module.ENABLE_PATH_COMMANDS_EXPORT = {current_module.ENABLE_PATH_COMMANDS_EXPORT}")
+            elif arg in ['--p_a', '--p-a'] or normalized_arg in ['p_a', 'p-a']:
+                ENABLE_PROCESSING_ANALYSIS = True
+                print(f"[WoodWOP] Processing analysis export enabled via {arg} flag")
+                print(f"[WoodWOP] ENABLE_PROCESSING_ANALYSIS = True")
+                # Update global variable
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.ENABLE_PROCESSING_ANALYSIS = True
+                    print(f"[WoodWOP] Updated module.ENABLE_PROCESSING_ANALYSIS = {current_module.ENABLE_PROCESSING_ANALYSIS}")
     
     # Debug output - use both print() and FreeCAD.Console to ensure visibility
     debug_log("[WoodWOP DEBUG] ===== export() called =====")
@@ -1155,7 +1178,8 @@ def extract_contour_from_path(obj):
                     'type': 'KL',  # Line
                     'x': x,
                     'y': y,
-                    'z': z  # Always include Z coordinate
+                    'z': z,  # Always include Z coordinate
+                    'move_type': 'G0'  # Store original movement type for analysis
                 }
                 elements.append(line_elem)
 
@@ -1171,7 +1195,8 @@ def extract_contour_from_path(obj):
                     'type': 'KL',  # Line
                     'x': x,
                     'y': y,
-                    'z': z  # Always include Z coordinate
+                    'z': z,  # Always include Z coordinate
+                    'move_type': 'G1'  # Store original movement type for analysis
                 }
                 elements.append(line_elem)
 
@@ -1481,9 +1506,16 @@ def generate_mpr_content():
     global STOCK_EXTENT_X, STOCK_EXTENT_Y, OUTPUT_COMMENTS, PRECISION, now
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
     global PROGRAM_OFFSET_X, PROGRAM_OFFSET_Y, PROGRAM_OFFSET_Z
+    global ENABLE_PROCESSING_ANALYSIS
     
     output = []
-    
+
+    # Initialize processing analysis file if enabled
+    analysis_lines = []
+    if ENABLE_PROCESSING_ANALYSIS:
+        analysis_lines.append("Processing Analysis - Path Commands | Analysis | MPR Output")
+        analysis_lines.append("=" * 120)
+
     # Header section [H
     output.append('[H')
     output.append('VERSION="4.0 Alpha"')
@@ -1553,17 +1585,17 @@ def generate_mpr_content():
     output.append(f'_RX={fmt(WORKPIECE_LENGTH + 2 * STOCK_EXTENT_X)}')
     output.append(f'_RY={fmt(WORKPIECE_WIDTH + 2 * STOCK_EXTENT_Y)}')
     output.append('')
-    
+
     # Contour elements section
     for contour in contours:
         output.append(f']{contour["id"]}')
-        
+
         # Add starting point ($E0 KP)
         start_x, start_y, start_z = contour.get('start_pos', (0.0, 0.0, 0.0))
         start_x += COORDINATE_OFFSET_X
         start_y += COORDINATE_OFFSET_Y
         start_z += COORDINATE_OFFSET_Z
-        
+
         output.append('$E0')
         output.append('KP ')
         output.append(f'X={fmt(start_x)}')
@@ -1575,7 +1607,7 @@ def generate_mpr_content():
         output.append('.Z=0.000000')
         output.append('.KO=00')
         output.append('')
-        
+
         # Add contour elements
         prev_elem_x = start_x
         prev_elem_y = start_y
@@ -1584,8 +1616,13 @@ def generate_mpr_content():
         for idx, elem in enumerate(contour['elements']):
             elem_num = idx + 1
             output.append(f'$E{elem_num}')
-            
+
             if elem['type'] == 'KL':  # Line
+                # Original coordinates (before offset) for Path Commands
+                orig_x = elem['x']
+                orig_y = elem['y']
+                orig_z = elem.get('z', 0.0)
+                
                 elem_x = elem['x'] + COORDINATE_OFFSET_X
                 elem_y = elem['y'] + COORDINATE_OFFSET_Y
                 z_value = elem.get('z', 0.0) + COORDINATE_OFFSET_Z
@@ -1616,7 +1653,22 @@ def generate_mpr_content():
                 output.append(f'.Z={fmt(z_value)}')
                 output.append(f'.WI={fmt(wi_angle)}')
                 output.append(f'.WZ={fmt(wz_angle)}')
+
+                # Calculate line length
+                line_length = math.sqrt(dx*dx + dy*dy + dz*dz)
                 
+                # Processing analysis output
+                if ENABLE_PROCESSING_ANALYSIS:
+                    # Determine movement type from original element (G0 or G1)
+                    move_type = elem.get('move_type', 'G1')  # Default to G1
+                    # Path Commands part
+                    path_cmd = f"{move_type} X={orig_x} Y={orig_y} Z={orig_z}"
+                    # Analysis part
+                    analysis = f"l={line_length:.6f} r1= r2= angle="
+                    # MPR Output part: format is contour:element type (e.g., 1:32 KL)
+                    mpr_output = f"{contour['id']}:{elem_num} KL e={fmt(elem_x)},{fmt(elem_y)},{fmt(z_value)} l={fmt(line_length)} rc= rf= OK"
+                    analysis_lines.append(f"{path_cmd} | {analysis} | {mpr_output}")
+
                 prev_elem_x = elem_x
                 prev_elem_y = elem_y
                 prev_elem_z = z_value
@@ -1648,33 +1700,142 @@ def generate_mpr_content():
                 # Determine if arc is small (<=180°) or large (>180°)
                 is_small_arc = arc_angle <= math.pi
                 
-                # Get radius
-                radius = elem.get('r', 0.0)
-                if radius <= 0.001:
-                    # Calculate radius from center to start point
-                    radius = math.sqrt((prev_elem_x - center_x)**2 + (prev_elem_y - center_y)**2)
+                # STEP 1: Calculate actual radii from center to start and end points
+                radius_from_start = math.sqrt((prev_elem_x - center_x)**2 + (prev_elem_y - center_y)**2)
+                radius_to_end = math.sqrt((elem_x - center_x)**2 + (elem_y - center_y)**2)
                 
-                # Special check for 180° arcs: verify feasibility
+                # Check if radii are significantly different (indicates geometry error)
+                radius_diff = abs(radius_from_start - radius_to_end)
+                if radius_diff > 0.001:  # More than 0.001mm difference
+                    print(f"[WoodWOP WARNING] Arc geometry error: radii from center differ by {radius_diff:.3f}mm")
+                    print(f"[WoodWOP WARNING]   Radius from start point: {radius_from_start:.3f}mm")
+                    print(f"[WoodWOP WARNING]   Radius to end point: {radius_to_end:.3f}mm")
+                    print(f"[WoodWOP WARNING]   Center: ({center_x:.3f}, {center_y:.3f})")
+                    print(f"[WoodWOP WARNING]   Start: ({prev_elem_x:.3f}, {prev_elem_y:.3f})")
+                    print(f"[WoodWOP WARNING]   End: ({elem_x:.3f}, {elem_y:.3f})")
+                    print(f"[WoodWOP WARNING]   Using average radius: {(radius_from_start + radius_to_end) / 2.0:.3f}mm")
+                
+                # STEP 2: Get radius from element or calculate from geometry
+                # Store initial radius BEFORE any corrections for analysis
+                initial_radius = elem.get('r', 0.0)
+                if initial_radius <= 0.001:
+                    # No radius provided, use average of calculated radii
+                    # This handles cases where radii differ slightly due to rounding
+                    initial_radius = (radius_from_start + radius_to_end) / 2.0
+                
+                radius = initial_radius
+                
+                # STEP 3: Verify radius matches geometry (should be close to both calculated radii)
+                # If there's a significant discrepancy (>0.001mm), recalculate from geometry
+                radius_avg = (radius_from_start + radius_to_end) / 2.0
+                radius_diff_start = abs(radius - radius_from_start)
+                radius_diff_end = abs(radius - radius_to_end)
+                
+                if radius_diff_start > 0.001 or radius_diff_end > 0.001:
+                    # Radius doesn't match geometry, use calculated average
+                    print(f"[WoodWOP WARNING] Arc radius mismatch. Provided R={radius:.3f}, calculated from start={radius_from_start:.3f}, from end={radius_to_end:.3f}. Using calculated average: {radius_avg:.3f}")
+                    radius = radius_avg
+                
+                # STEP 4: Calculate chord length (distance between start and end points)
+                chord_length = math.sqrt((elem_x - prev_elem_x)**2 + (elem_y - prev_elem_y)**2)
+                
+                # STEP 5: Special check for 180° arcs - verify feasibility
                 # For 180° arc, radius cannot be smaller than half the chord length
                 # Example: from (0,0) to (100,0) with radius 49.999 is impossible
                 # Minimum radius must be at least chord_length / 2
                 if abs(arc_angle - math.pi) < 0.001:  # Arc is approximately 180°
-                    # Calculate chord length (distance between start and end points)
-                    chord_length = math.sqrt((elem_x - prev_elem_x)**2 + (elem_y - prev_elem_y)**2)
+                    # For 180° arc, ensure chord_length <= 2 * radius
+                    # Keep adjusting radius until it's guaranteed to be large enough
+                    iteration = 0
+                    max_iterations = 10  # Safety limit to prevent infinite loop
+                    while chord_length - 2 * radius > 0.0001 and iteration < max_iterations:
+                        # Radius is too small for 180° arc, adjust to minimum + margin
+                        radius = chord_length / 2.0 + 0.001
+                        iteration += 1
+                        if iteration == 1:
+                            print(f"[WoodWOP WARNING] 180° arc: radius too small for chord {chord_length:.3f}. Adjusting to {radius:.3f}")
+                        elif iteration > 1:
+                            print(f"[WoodWOP WARNING] 180° arc: iteration {iteration}, radius adjusted to {radius:.3f}")
                     
-                    # Check if radius is feasible: chord_length >= 2 * radius
-                    # If radius is too small, increase it to minimum required
-                    if chord_length >= 2 * radius:
-                        # Radius is OK, no correction needed
-                        pass
+                    if iteration >= max_iterations:
+                        print(f"[WoodWOP ERROR] 180° arc: failed to correct radius after {max_iterations} iterations. Final radius: {radius:.3f}, chord: {chord_length:.3f}")
+                    
+                    # Final guarantee: ensure 2 * radius >= chord_length with small margin to prevent negative real_correction
+                    # Add extra margin to account for rounding errors
+                    min_required_radius = chord_length / 2.0 + 0.001  # Margin for rounding
+                    if radius < min_required_radius:
+                        radius = min_required_radius
+                        print(f"[WoodWOP WARNING] 180° arc: final adjustment to prevent negative real_correction. Radius set to {radius:.6f}")
+                
+                # STEP 6: Final verification - ensure radius is not zero or negative
+                if radius <= 0.001:
+                    # Fallback: use chord length / 2 (minimum for any arc)
+                    radius = max(chord_length / 2.0, 0.001)
+                    print(f"[WoodWOP WARNING] Arc radius was zero or negative, set to minimum: {radius:.3f}")
+                
+                # STEP 7: Skip arc if radius is still too small (< 0.001)
+                # Such arcs are invalid and should be skipped
+                if radius < 0.001:
+                    print(f"[WoodWOP WARNING] Skipping arc with radius {radius:.6f} < 0.001mm (too small, invalid geometry)")
+                    print(f"[WoodWOP WARNING]   Start: ({prev_elem_x:.3f}, {prev_elem_y:.3f}), End: ({elem_x:.3f}, {elem_y:.3f})")
+                    print(f"[WoodWOP WARNING]   Center: ({center_x:.3f}, {center_y:.3f}), Chord: {chord_length:.3f}mm")
+                    # Update previous position but skip adding this element
+                    prev_elem_x = elem_x
+                    prev_elem_y = elem_y
+                    prev_elem_z = z_value
+                    continue  # Skip this arc element
+                
+                # Check if corrections were applied
+                # Corrections happen in STEP 3 (geometry mismatch) or STEP 5 (180° arc)
+                was_corrected = False
+                if abs(radius - initial_radius) > 0.001:
+                    was_corrected = True
+                elif abs(arc_angle - math.pi) < 0.001:
+                    # For 180° arcs, check if radius was adjusted
+                    min_radius_180 = chord_length / 2.0
+                    if abs(radius - min_radius_180) > 0.001 or radius > min_radius_180:
+                        was_corrected = True
+                
+                radius_corrected = radius
+                
+                # Calculate real_correction for arcs: 2 * radius - chord_length
+                # For 180° arcs, ensure real_correction is never negative (due to rounding errors)
+                real_correction = 2 * radius - chord_length
+                if abs(arc_angle - math.pi) < 0.001:  # Arc is approximately 180°
+                    # Guarantee non-negative real_correction for 180° arcs
+                    if real_correction < 0:
+                        # Additional correction: increase radius slightly
+                        radius = chord_length / 2.0 + abs(real_correction) / 2.0 + 0.001
+                        real_correction = 2 * radius - chord_length
+                        print(f"[WoodWOP WARNING] 180° arc: real_correction was negative ({real_correction:.8f}), adjusted radius to {radius:.6f}, new real_correction={real_correction:.8f}")
+                    # Ensure real_correction is at least 0 (handle rounding to -0.00000000)
+                    real_correction = max(0.0, real_correction)
+                
+                # Calculate arc angle in degrees for analysis
+                arc_angle_deg = math.degrees(arc_angle)
+                
+                # Processing analysis output for arcs
+                if ENABLE_PROCESSING_ANALYSIS:
+                    # Original coordinates (before offset) for Path Commands
+                    orig_x = elem['x']
+                    orig_y = elem['y']
+                    orig_z = elem.get('z', 0.0)
+                    orig_i = elem.get('i', 0.0)
+                    orig_j = elem.get('j', 0.0)
+                    move_type = 'G2' if direction == 'CW' else 'G3'
+                    
+                    # Path Commands part
+                    path_cmd = f"{move_type} X={orig_x} Y={orig_y} Z={orig_z} I={orig_i} J={orig_j}"
+                    # Analysis part
+                    analysis = f"ch={chord_length:.6f} r1={radius_from_start:.6f} r2={radius_to_end:.6f} angle={arc_angle_deg:.6f}"
+                    # MPR Output part: format is contour:element type (e.g., 1:32 KA)
+                    correction_status = "CORR" if was_corrected else "OK"
+                    # real_correction only for 180° arcs
+                    if abs(arc_angle - math.pi) < 0.001:
+                        mpr_output = f"{contour['id']}:{elem_num} KA e={fmt(elem_x)},{fmt(elem_y)},{fmt(z_value)} l={fmt(chord_length)} rc={fmt(initial_radius)} rf={fmt(radius_corrected)} {correction_status} rcorr={real_correction:.8f}"
                     else:
-                        # Radius is too small, adjust it to minimum: chord_length / 2
-                        radius = chord_length / 2.0
-                        
-                        # Re-check after adjustment (for rounding errors)
-                        if chord_length < 2 * radius:
-                            # Still too small due to rounding, add small margin
-                            radius = chord_length / 2.0 + 0.001
+                        mpr_output = f"{contour['id']}:{elem_num} KA e={fmt(elem_x)},{fmt(elem_y)},{fmt(z_value)} l={fmt(chord_length)} rc={fmt(initial_radius)} rf={fmt(radius_corrected)} {correction_status}"
+                    analysis_lines.append(f"{path_cmd} | {analysis} | {mpr_output}")
                 
                 # Calculate DS value based on direction and arc size
                 # DS=0: CW small arc (<=180°)
@@ -1710,34 +1871,34 @@ def generate_mpr_content():
                 prev_elem_x = elem_x
                 prev_elem_y = elem_y
                 prev_elem_z = z_value
-            
+
             output.append('')
-        
+
         output.append('')
-    
+
     # Variables and workpiece section
-        output.append('[001')
-        output.append(f'l="{fmt(WORKPIECE_LENGTH)}"')
+    output.append('[001')
+    output.append(f'l="{fmt(WORKPIECE_LENGTH)}"')
     if OUTPUT_COMMENTS:
         output.append('KM="Länge in X"')
-        output.append(f'w="{fmt(WORKPIECE_WIDTH)}"')
+    output.append(f'w="{fmt(WORKPIECE_WIDTH)}"')
     if OUTPUT_COMMENTS:
         output.append('KM="Breite in Y"')
-        output.append(f'th="{fmt(WORKPIECE_THICKNESS)}"')
+    output.append(f'th="{fmt(WORKPIECE_THICKNESS)}"')
     if OUTPUT_COMMENTS:
         output.append('KM="Dicke in Z"')
-        output.append('')
-    
-        output.append(f'<100 \\WerkStck\\')
-        output.append(f'LA="l"')
-        output.append(f'BR="w"')
-        output.append(f'DI="th"')
-        output.append(f'FNX="{fmt(STOCK_EXTENT_X)}"')
-        output.append(f'FNY="{fmt(STOCK_EXTENT_Y)}"')
-        output.append(f'AX="0"')
-        output.append(f'AY="0"')
-        output.append('')
-    
+    output.append('')
+
+    output.append(f'<100 \\WerkStck\\')
+    output.append(f'LA="l"')
+    output.append(f'BR="w"')
+    output.append(f'DI="th"')
+    output.append(f'FNX="{fmt(STOCK_EXTENT_X)}"')
+    output.append(f'FNY="{fmt(STOCK_EXTENT_Y)}"')
+    output.append(f'AX="0"')
+    output.append(f'AY="0"')
+    output.append('')
+
     if OUTPUT_COMMENTS:
         output.append('<101 \\Comment\\')
         output.append(f'KM="Generated by FreeCAD WoodWOP Post Processor"')
@@ -1745,7 +1906,7 @@ def generate_mpr_content():
         if COORDINATE_SYSTEM:
             output.append(f'KM="Coordinate System: {COORDINATE_SYSTEM} (offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={COORDINATE_OFFSET_Z:.3f})"')
         output.append('')
-    
+
     # Operations section
     for op in operations:
         if op['type'] == 'BohrVert':
@@ -1759,7 +1920,7 @@ def generate_mpr_content():
             output.append(f'TNO="{op["tool"]}"')
             output.append(f'BM="SS"')
             output.append('')
-            
+
         elif op['type'] == 'Contourfraesen':
             output.append(f'<{op["id"]} \\Contourfraesen\\')
             output.append(f'EA="{op["contour"]}:0"')
@@ -1772,16 +1933,16 @@ def generate_mpr_content():
             output.append(f'TNO="{op["tool"]}"')
             output.append(f'SM="0"')
             output.append('')
-            
+
         elif op['type'] == 'Pocket':
             output.append(f'<{op["id"]} \\Pocket\\')
             output.append(f'EA="{op["contour"]}:0"')
             output.append(f'TNO="{op["tool"]}"')
             output.append('')
-    
+
     # End of file
     output.append('!')
-    
+
     # CRITICAL DEBUG: Check output before joining
     print(f"[WoodWOP DEBUG] generate_mpr_content() output list length: {len(output)}")
     if len(output) == 0:
@@ -1795,6 +1956,44 @@ def generate_mpr_content():
         minimal_mpr = '[H\r\nVERSION="4.0 Alpha"\r\n]H\r\n[001\r\nz_safe=20.0\r\n]001\r\n!'
         print(f"[WoodWOP DEBUG] Returning minimal MPR file (length: {len(minimal_mpr)})")
         return minimal_mpr
+    
+    # Save processing analysis file if enabled
+    if ENABLE_PROCESSING_ANALYSIS and len(analysis_lines) > 0:
+        try:
+            import os
+            import FreeCAD
+            # Get base filename from Job or use default
+            base_filename = "processing_analysis"
+            try:
+                doc = FreeCAD.ActiveDocument
+                if doc:
+                    for obj in doc.Objects:
+                        if hasattr(obj, 'Proxy') and 'Job' in str(type(obj.Proxy)):
+                            if hasattr(obj, 'PostProcessorOutputFile') and obj.PostProcessorOutputFile:
+                                base_filename = os.path.splitext(os.path.basename(obj.PostProcessorOutputFile))[0]
+                                break
+                            elif hasattr(obj, 'Model') and obj.Model:
+                                if hasattr(obj.Model, 'Label'):
+                                    base_filename = obj.Model.Label.replace(' ', '_')
+                                    break
+            except:
+                pass
+            
+            # Determine output directory
+            output_dir = os.getcwd()
+            try:
+                doc = FreeCAD.ActiveDocument
+                if doc and hasattr(doc, 'FileName') and doc.FileName:
+                    output_dir = os.path.dirname(doc.FileName)
+            except:
+                pass
+            
+            analysis_filename = os.path.join(output_dir, f"{base_filename}_processing_analysis.txt")
+            with open(analysis_filename, 'w', encoding='utf-8', newline='\n') as f:
+                f.write('\n'.join(analysis_lines))
+            print(f"[WoodWOP] Processing analysis exported to: {analysis_filename}")
+        except Exception as e:
+            print(f"[WoodWOP ERROR] Failed to write processing analysis file: {e}")
     
     # Return the complete MPR content as a string with CRLF line endings
     # MPR format requires CRLF (\r\n) for Windows compatibility
