@@ -63,6 +63,10 @@ WORKPIECE_WIDTH = None
 WORKPIECE_THICKNESS = None
 STOCK_EXTENT_X = 0.0
 STOCK_EXTENT_Y = 0.0
+STOCK_EXTENT_X_NEG = 0.0  # l_off (left offset)
+STOCK_EXTENT_X_POS = 0.0  # r_oz (right oversize)
+STOCK_EXTENT_Y_NEG = 0.0  # f_off (front offset)
+STOCK_EXTENT_Y_POS = 0.0  # b_oz (back oversize)
 USE_PART_NAME = False
 
 # Program offsets (for workpiece positioning in WoodWOP)
@@ -93,8 +97,8 @@ ENABLE_PATH_COMMANDS_EXPORT = False  # Set to True via /p_c or --p_c flag to ena
 # Processing analysis export flag
 ENABLE_PROCESSING_ANALYSIS = False  # Set to True via /p_a or --p_a flag to enable processing analysis export
 
-# Processing analysis export flag
-ENABLE_PROCESSING_ANALYSIS = False  # Set to True via /p_a or --p_a flag to enable processing analysis export
+# Z-safe minimum override flag
+ENABLE_NO_Z_SAFE20 = False  # Set to True via /no_z_safe20 flag to disable 20mm minimum for z_safe
 
 # Tracking
 contour_counter = 1
@@ -132,10 +136,12 @@ def export(objectslist, filename, argstring):
     global OUTPUT_COMMENTS, PRECISION
     global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS, USE_PART_NAME
     global STOCK_EXTENT_X, STOCK_EXTENT_Y
+    global STOCK_EXTENT_X_NEG, STOCK_EXTENT_X_POS, STOCK_EXTENT_Y_NEG, STOCK_EXTENT_Y_POS
     global PROGRAM_OFFSET_X, PROGRAM_OFFSET_Y, PROGRAM_OFFSET_Z
     global contour_counter, contours, operations, tools_used
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
     global ENABLE_VERBOSE_LOGGING, ENABLE_JOB_REPORT, OUTPUT_NC_FILE, ENABLE_PATH_COMMANDS_EXPORT, ENABLE_PROCESSING_ANALYSIS
+    global ENABLE_NO_Z_SAFE20
     
     # Reset flags first
     ENABLE_VERBOSE_LOGGING = False
@@ -143,6 +149,7 @@ def export(objectslist, filename, argstring):
     OUTPUT_NC_FILE = False
     ENABLE_PATH_COMMANDS_EXPORT = False
     ENABLE_PROCESSING_ANALYSIS = False
+    ENABLE_NO_Z_SAFE20 = False
     
     # Parse arguments FIRST to set flags before any other operations
     # This is critical for /log flag to work correctly with FilenameGenerator
@@ -170,6 +177,10 @@ def export(objectslist, filename, argstring):
                 print(f"[WoodWOP] ENABLE_JOB_REPORT = True")
                 # Update global variable
                 import sys
+            elif arg in ['--no_z_safe20', '/no_z_safe20'] or normalized_arg == 'no_z_safe20':
+                ENABLE_NO_Z_SAFE20 = True
+                print(f"[WoodWOP] 20mm minimum for z_safe disabled via /no_z_safe20 flag")
+                print(f"[WoodWOP] ENABLE_NO_Z_SAFE20 = True")
                 current_module = sys.modules.get(__name__)
                 if current_module:
                     current_module.ENABLE_JOB_REPORT = True
@@ -610,58 +621,150 @@ def export(objectslist, filename, argstring):
         print(f"[WoodWOP DEBUG] Will create: {os.path.join(output_dir, base_filename + '.mpr')} (NC file disabled)")
 
     # Auto-detect workpiece dimensions if not specified
-    # Priority: 1) Arguments, 2) Part dimensions (Job.Base), 3) Stock dimensions, 4) Defaults
+    # Priority: 1) Arguments, 2) Stock dimensions (Job.Stock), 3) Model dimensions (Job.Model), 4) Base dimensions (Job.Base), 5) Defaults
     
-    # Try to get dimensions from part (Job.Base) first
-    if job and hasattr(job, 'Base') and job.Base:
-        try:
-            base_obj = None
-            if isinstance(job.Base, (list, tuple)) and len(job.Base) > 0:
-                base_obj = job.Base[0]
-            elif hasattr(job.Base, 'Shape'):
-                base_obj = job.Base
-            elif hasattr(job.Base, 'Name'):
-                # Try to get object from document
-                try:
-                    import FreeCAD
-                    doc = FreeCAD.ActiveDocument
-                    if doc:
-                        base_obj = doc.getObject(job.Base.Name)
-                except:
-                    pass
-            
-            if base_obj and hasattr(base_obj, 'Shape') and hasattr(base_obj.Shape, 'BoundBox'):
-                bbox = base_obj.Shape.BoundBox
-                if WORKPIECE_LENGTH is None:
-                    WORKPIECE_LENGTH = bbox.XLength
-                    print(f"[WoodWOP DEBUG] Detected workpiece length from part: {WORKPIECE_LENGTH:.3f} mm")
-                if WORKPIECE_WIDTH is None:
-                    WORKPIECE_WIDTH = bbox.YLength
-                    print(f"[WoodWOP DEBUG] Detected workpiece width from part: {WORKPIECE_WIDTH:.3f} mm")
-                if WORKPIECE_THICKNESS is None:
-                    WORKPIECE_THICKNESS = bbox.ZLength
-                    print(f"[WoodWOP DEBUG] Detected workpiece thickness from part: {WORKPIECE_THICKNESS:.3f} mm")
-        except Exception as e:
-            print(f"[WoodWOP DEBUG] Could not get dimensions from part: {e}")
-    
-    # If not found in part, try Stock
+    # First priority: Stock dimensions (most accurate for workpiece)
     if job and hasattr(job, 'Stock') and job.Stock:
         stock = job.Stock
-        if WORKPIECE_LENGTH is None and hasattr(stock, 'Length'):
-            WORKPIECE_LENGTH = stock.Length.Value
-            print(f"[WoodWOP DEBUG] Detected workpiece length from Stock: {WORKPIECE_LENGTH:.3f} mm")
-        if WORKPIECE_WIDTH is None and hasattr(stock, 'Width'):
-            WORKPIECE_WIDTH = stock.Width.Value
-            print(f"[WoodWOP DEBUG] Detected workpiece width from Stock: {WORKPIECE_WIDTH:.3f} mm")
-        if WORKPIECE_THICKNESS is None and hasattr(stock, 'Height'):
-            WORKPIECE_THICKNESS = stock.Height.Value
-            print(f"[WoodWOP DEBUG] Detected workpiece thickness from Stock: {WORKPIECE_THICKNESS:.3f} mm")
+        try:
+            if WORKPIECE_LENGTH is None and hasattr(stock, 'Length'):
+                WORKPIECE_LENGTH = stock.Length.Value if hasattr(stock.Length, 'Value') else stock.Length
+                print(f"[WoodWOP DEBUG] Detected workpiece length from Stock: {WORKPIECE_LENGTH:.3f} mm")
+            if WORKPIECE_WIDTH is None and hasattr(stock, 'Width'):
+                WORKPIECE_WIDTH = stock.Width.Value if hasattr(stock.Width, 'Value') else stock.Width
+                print(f"[WoodWOP DEBUG] Detected workpiece width from Stock: {WORKPIECE_WIDTH:.3f} mm")
+            if WORKPIECE_THICKNESS is None and hasattr(stock, 'Height'):
+                WORKPIECE_THICKNESS = stock.Height.Value if hasattr(stock.Height, 'Value') else stock.Height
+                print(f"[WoodWOP DEBUG] Detected workpiece thickness from Stock: {WORKPIECE_THICKNESS:.3f} mm")
 
-        # Get stock extents for raw material calculations
-        if hasattr(stock, 'ExtentXPos'):
-            STOCK_EXTENT_X = stock.ExtentXPos.Value
-        if hasattr(stock, 'ExtentYPos'):
-            STOCK_EXTENT_Y = stock.ExtentYPos.Value
+            # Get stock extents (oversizes) for raw material calculations
+            # According to WoodWOP standard, we need separate variables:
+            # l_off (left offset = ExtentXNeg), f_off (front offset = ExtentYNeg)
+            # r_oz (right oversize = ExtentXPos), b_oz (back oversize = ExtentYPos)
+            stock_extent_x_neg = 0.0  # l_off
+            stock_extent_x_pos = 0.0  # r_oz
+            stock_extent_y_neg = 0.0  # f_off
+            stock_extent_y_pos = 0.0  # b_oz
+            
+            if hasattr(stock, 'ExtentXNeg'):
+                stock_extent_x_neg = stock.ExtentXNeg.Value if hasattr(stock.ExtentXNeg, 'Value') else stock.ExtentXNeg
+            elif hasattr(stock, 'ExtXneg'):
+                stock_extent_x_neg = stock.ExtXneg.Value if hasattr(stock.ExtXneg, 'Value') else stock.ExtXneg
+            
+            if hasattr(stock, 'ExtentXPos'):
+                stock_extent_x_pos = stock.ExtentXPos.Value if hasattr(stock.ExtentXPos, 'Value') else stock.ExtentXPos
+            elif hasattr(stock, 'ExtXpos'):
+                stock_extent_x_pos = stock.ExtXpos.Value if hasattr(stock.ExtXpos, 'Value') else stock.ExtXpos
+            
+            if hasattr(stock, 'ExtentYNeg'):
+                stock_extent_y_neg = stock.ExtentYNeg.Value if hasattr(stock.ExtentYNeg, 'Value') else stock.ExtentYNeg
+            elif hasattr(stock, 'ExtYneg'):
+                stock_extent_y_neg = stock.ExtYneg.Value if hasattr(stock.ExtYneg, 'Value') else stock.ExtYneg
+            
+            if hasattr(stock, 'ExtentYPos'):
+                stock_extent_y_pos = stock.ExtentYPos.Value if hasattr(stock.ExtentYPos, 'Value') else stock.ExtentYPos
+            elif hasattr(stock, 'ExtYpos'):
+                stock_extent_y_pos = stock.ExtYpos.Value if hasattr(stock.ExtYpos, 'Value') else stock.ExtYpos
+            
+            # Store individual extents for MPR variables
+            # STOCK_EXTENT_X and STOCK_EXTENT_Y are kept for backward compatibility
+            STOCK_EXTENT_X = stock_extent_x_neg + stock_extent_x_pos
+            STOCK_EXTENT_Y = stock_extent_y_neg + stock_extent_y_pos
+            
+            # Store individual values for MPR variables
+            global STOCK_EXTENT_X_NEG, STOCK_EXTENT_X_POS, STOCK_EXTENT_Y_NEG, STOCK_EXTENT_Y_POS
+            STOCK_EXTENT_X_NEG = stock_extent_x_neg
+            STOCK_EXTENT_X_POS = stock_extent_x_pos
+            STOCK_EXTENT_Y_NEG = stock_extent_y_neg
+            STOCK_EXTENT_Y_POS = stock_extent_y_pos
+            
+            print(f"[WoodWOP DEBUG] Stock extents: l_off (X-)={stock_extent_x_neg:.3f}, r_oz (X+)={stock_extent_x_pos:.3f}, f_off (Y-)={stock_extent_y_neg:.3f}, b_oz (Y+)={stock_extent_y_pos:.3f}")
+            print(f"[WoodWOP DEBUG] Stock extents total: FNX={STOCK_EXTENT_X:.3f}, FNY={STOCK_EXTENT_Y:.3f}")
+            
+            # Get program offsets (x, y, z) if available
+            if hasattr(stock, 'Position') and stock.Position:
+                pos = stock.Position
+                if hasattr(pos, 'x'):
+                    PROGRAM_OFFSET_X = pos.x.Value if hasattr(pos.x, 'Value') else pos.x
+                elif hasattr(pos, 'X'):
+                    PROGRAM_OFFSET_X = pos.X.Value if hasattr(pos.X, 'Value') else pos.X
+                if hasattr(pos, 'y'):
+                    PROGRAM_OFFSET_Y = pos.y.Value if hasattr(pos.y, 'Value') else pos.y
+                elif hasattr(pos, 'Y'):
+                    PROGRAM_OFFSET_Y = pos.Y.Value if hasattr(pos.Y, 'Value') else pos.Y
+                if hasattr(pos, 'z'):
+                    PROGRAM_OFFSET_Z = pos.z.Value if hasattr(pos.z, 'Value') else pos.z
+                elif hasattr(pos, 'Z'):
+                    PROGRAM_OFFSET_Z = pos.Z.Value if hasattr(pos.Z, 'Value') else pos.Z
+                print(f"[WoodWOP DEBUG] Program offsets from Stock.Position: x={PROGRAM_OFFSET_X:.3f}, y={PROGRAM_OFFSET_Y:.3f}, z={PROGRAM_OFFSET_Z:.3f}")
+            elif hasattr(stock, 'ProgramOffset'):
+                prog_offset = stock.ProgramOffset
+                if hasattr(prog_offset, 'x'):
+                    PROGRAM_OFFSET_X = prog_offset.x.Value if hasattr(prog_offset.x, 'Value') else prog_offset.x
+                elif hasattr(prog_offset, 'X'):
+                    PROGRAM_OFFSET_X = prog_offset.X.Value if hasattr(prog_offset.X, 'Value') else prog_offset.X
+                if hasattr(prog_offset, 'y'):
+                    PROGRAM_OFFSET_Y = prog_offset.y.Value if hasattr(prog_offset.y, 'Value') else prog_offset.y
+                elif hasattr(prog_offset, 'Y'):
+                    PROGRAM_OFFSET_Y = prog_offset.Y.Value if hasattr(prog_offset.Y, 'Value') else prog_offset.Y
+                if hasattr(prog_offset, 'z'):
+                    PROGRAM_OFFSET_Z = prog_offset.z.Value if hasattr(prog_offset.z, 'Value') else prog_offset.z
+                elif hasattr(prog_offset, 'Z'):
+                    PROGRAM_OFFSET_Z = prog_offset.Z.Value if hasattr(prog_offset.Z, 'Value') else prog_offset.Z
+                print(f"[WoodWOP DEBUG] Program offsets from Stock.ProgramOffset: x={PROGRAM_OFFSET_X:.3f}, y={PROGRAM_OFFSET_Y:.3f}, z={PROGRAM_OFFSET_Z:.3f}")
+        except Exception as e:
+            print(f"[WoodWOP DEBUG] Could not get dimensions from Stock: {e}")
+    
+    # Second priority: Model dimensions
+    if job and (WORKPIECE_LENGTH is None or WORKPIECE_WIDTH is None or WORKPIECE_THICKNESS is None):
+        if hasattr(job, 'Model') and job.Model:
+            try:
+                model_obj = job.Model
+                if hasattr(model_obj, 'Shape') and hasattr(model_obj.Shape, 'BoundBox'):
+                    bbox = model_obj.Shape.BoundBox
+                    if WORKPIECE_LENGTH is None:
+                        WORKPIECE_LENGTH = bbox.XLength
+                        print(f"[WoodWOP DEBUG] Detected workpiece length from Model: {WORKPIECE_LENGTH:.3f} mm")
+                    if WORKPIECE_WIDTH is None:
+                        WORKPIECE_WIDTH = bbox.YLength
+                        print(f"[WoodWOP DEBUG] Detected workpiece width from Model: {WORKPIECE_WIDTH:.3f} mm")
+                    if WORKPIECE_THICKNESS is None:
+                        WORKPIECE_THICKNESS = bbox.ZLength
+                        print(f"[WoodWOP DEBUG] Detected workpiece thickness from Model: {WORKPIECE_THICKNESS:.3f} mm")
+            except Exception as e:
+                print(f"[WoodWOP DEBUG] Could not get dimensions from Model: {e}")
+    
+    # Third priority: Base dimensions
+    if job and (WORKPIECE_LENGTH is None or WORKPIECE_WIDTH is None or WORKPIECE_THICKNESS is None):
+        if hasattr(job, 'Base') and job.Base:
+            try:
+                base_obj = None
+                if isinstance(job.Base, (list, tuple)) and len(job.Base) > 0:
+                    base_obj = job.Base[0]
+                elif hasattr(job.Base, 'Shape'):
+                    base_obj = job.Base
+                elif hasattr(job.Base, 'Name'):
+                    try:
+                        import FreeCAD
+                        doc = FreeCAD.ActiveDocument
+                        if doc:
+                            base_obj = doc.getObject(job.Base.Name)
+                    except:
+                        pass
+                
+                if base_obj and hasattr(base_obj, 'Shape') and hasattr(base_obj.Shape, 'BoundBox'):
+                    bbox = base_obj.Shape.BoundBox
+                    if WORKPIECE_LENGTH is None:
+                        WORKPIECE_LENGTH = bbox.XLength
+                        print(f"[WoodWOP DEBUG] Detected workpiece length from Base: {WORKPIECE_LENGTH:.3f} mm")
+                    if WORKPIECE_WIDTH is None:
+                        WORKPIECE_WIDTH = bbox.YLength
+                        print(f"[WoodWOP DEBUG] Detected workpiece width from Base: {WORKPIECE_WIDTH:.3f} mm")
+                    if WORKPIECE_THICKNESS is None:
+                        WORKPIECE_THICKNESS = bbox.ZLength
+                        print(f"[WoodWOP DEBUG] Detected workpiece thickness from Base: {WORKPIECE_THICKNESS:.3f} mm")
+            except Exception as e:
+                print(f"[WoodWOP DEBUG] Could not get dimensions from Base: {e}")
 
     # Set defaults if still None
     if WORKPIECE_LENGTH is None:
@@ -714,8 +817,63 @@ def export(objectslist, filename, argstring):
     
     # Calculate coordinate offset if G54 or other coordinate system flag is set
     # This offset will be applied ONLY to MPR format, G-code remains unchanged
+    # Priority: 1) Job.Model bounding box, 2) Job.Base bounding box, 3) Contours (fallback)
     if COORDINATE_SYSTEM:
-        min_x, min_y, min_z = calculate_part_minimum()
+        min_x = None
+        min_y = None
+        min_z = None
+        
+        # Try to get from Job.Model first (most accurate)
+        if job and hasattr(job, 'Model') and job.Model:
+            try:
+                model_obj = job.Model
+                if hasattr(model_obj, 'Shape') and hasattr(model_obj.Shape, 'BoundBox'):
+                    bbox = model_obj.Shape.BoundBox
+                    min_x = bbox.XMin
+                    min_y = bbox.YMin
+                    min_z = bbox.ZMin
+                    print(f"[WoodWOP DEBUG] G54 offset from Job.Model.BoundBox: X={min_x:.3f}, Y={min_y:.3f}, Z={min_z:.3f}")
+                elif hasattr(model_obj, 'BoundBox'):
+                    bbox = model_obj.BoundBox
+                    min_x = bbox.XMin
+                    min_y = bbox.YMin
+                    min_z = bbox.ZMin
+                    print(f"[WoodWOP DEBUG] G54 offset from Job.Model.BoundBox: X={min_x:.3f}, Y={min_y:.3f}, Z={min_z:.3f}")
+            except Exception as e:
+                print(f"[WoodWOP DEBUG] Could not get G54 offset from Job.Model: {e}")
+        
+        # If Model not available, try Base
+        if min_x is None and job and hasattr(job, 'Base') and job.Base:
+            try:
+                base_obj = None
+                if isinstance(job.Base, (list, tuple)) and len(job.Base) > 0:
+                    base_obj = job.Base[0]
+                elif hasattr(job.Base, 'Shape'):
+                    base_obj = job.Base
+                elif hasattr(job.Base, 'Name'):
+                    try:
+                        import FreeCAD
+                        doc = FreeCAD.ActiveDocument
+                        if doc:
+                            base_obj = doc.getObject(job.Base.Name)
+                    except:
+                        pass
+                
+                if base_obj and hasattr(base_obj, 'Shape') and hasattr(base_obj.Shape, 'BoundBox'):
+                    bbox = base_obj.Shape.BoundBox
+                    min_x = bbox.XMin
+                    min_y = bbox.YMin
+                    min_z = bbox.ZMin
+                    print(f"[WoodWOP DEBUG] G54 offset from Job.Base.BoundBox: X={min_x:.3f}, Y={min_y:.3f}, Z={min_z:.3f}")
+            except Exception as e:
+                print(f"[WoodWOP DEBUG] Could not get G54 offset from Job.Base: {e}")
+        
+        # Fallback: calculate from contours (less accurate)
+        if min_x is None:
+            min_x, min_y, min_z = calculate_part_minimum()
+            print(f"[WoodWOP DEBUG] G54 offset from contours (fallback): X={min_x:.3f}, Y={min_y:.3f}, Z={min_z:.3f}")
+            print(f"[WoodWOP WARNING] Using contour-based G54 offset - may be inaccurate! Use Job.Model for accurate offset.")
+        
         COORDINATE_OFFSET_X = -min_x
         COORDINATE_OFFSET_Y = -min_y
         COORDINATE_OFFSET_Z = -min_z
@@ -729,7 +887,71 @@ def export(objectslist, filename, argstring):
         COORDINATE_OFFSET_Z = 0.0
         print(f"[WoodWOP DEBUG] Using project coordinate system (no offset)")
     
-    mpr_content = generate_mpr_content()
+    # Calculate z_safe from SetupSheet.ClearanceHeightOffset
+    z_safe = 20.0  # Default value
+    z_safe_actual = None
+    z_safe_was_increased = False
+    
+    if job:
+        try:
+            # Try to get SetupSheet from Job
+            setup_sheet = None
+            if hasattr(job, 'SetupSheet') and job.SetupSheet:
+                setup_sheet = job.SetupSheet
+            elif hasattr(job, 'SetupSheetName') and job.SetupSheetName:
+                try:
+                    import FreeCAD
+                    doc = FreeCAD.ActiveDocument
+                    if doc:
+                        setup_sheet = doc.getObject(job.SetupSheetName)
+                except:
+                    pass
+            
+            if setup_sheet:
+                # Get ClearanceHeightOffset from SetupSheet
+                if hasattr(setup_sheet, 'ClearanceHeightOffset'):
+                    clearance_height = setup_sheet.ClearanceHeightOffset
+                    if hasattr(clearance_height, 'Value'):
+                        z_safe_actual = float(clearance_height.Value)
+                    else:
+                        z_safe_actual = float(clearance_height)
+                    print(f"[WoodWOP DEBUG] Found ClearanceHeightOffset in SetupSheet: {z_safe_actual:.3f} mm")
+                else:
+                    print(f"[WoodWOP DEBUG] SetupSheet has no ClearanceHeightOffset property")
+            else:
+                print(f"[WoodWOP DEBUG] No SetupSheet found in Job")
+        except Exception as e:
+            print(f"[WoodWOP DEBUG] Could not get z_safe from SetupSheet: {e}")
+    
+    # Apply minimum 20mm if flag is not set
+    if z_safe_actual is not None:
+        z_safe = z_safe_actual
+        if not ENABLE_NO_Z_SAFE20 and z_safe < 20.0:
+            z_safe = 20.0
+            z_safe_was_increased = True
+            print(f"[WoodWOP DEBUG] z_safe increased from {z_safe_actual:.3f} to 20.0 mm (minimum)")
+    else:
+        print(f"[WoodWOP DEBUG] Using default z_safe: {z_safe:.3f} mm")
+    
+    # Show pop-up window with z_safe information
+    try:
+        import FreeCAD
+        import FreeCADGui
+        
+        if z_safe_was_increased:
+            # Red message: actual value was less than 20mm but 20mm was used
+            message = f"z_safe увеличен до минимума 20 мм\n\nФактическое значение ClearanceHeightOffset: {z_safe_actual:.3f} мм\nИспользуемое значение: {z_safe:.3f} мм\n\nИспользуйте флаг /no_z_safe20 для отключения минимума."
+            FreeCADGui.showDialog("WoodWOP Warning", message, severity="error")
+            print(f"[WoodWOP WARNING] z_safe was increased to minimum 20mm (actual: {z_safe_actual:.3f} mm)")
+        elif z_safe_actual is not None and z_safe_actual > 20.0:
+            # Yellow message: value is greater than 20mm
+            message = f"z_safe значение больше 20 мм\n\nClearanceHeightOffset: {z_safe_actual:.3f} мм\nИспользуемое значение: {z_safe:.3f} мм"
+            FreeCADGui.showDialog("WoodWOP Info", message, severity="warning")
+            print(f"[WoodWOP INFO] z_safe is {z_safe:.3f} mm (greater than 20mm)")
+    except Exception as e:
+        print(f"[WoodWOP DEBUG] Could not show z_safe dialog: {e}")
+    
+    mpr_content = generate_mpr_content(z_safe)
     # Validate MPR content
     if not isinstance(mpr_content, str):
         print(f"[WoodWOP ERROR] generate_mpr_content() returned {type(mpr_content)} instead of string: {mpr_content}")
@@ -881,6 +1103,8 @@ def export(objectslist, filename, argstring):
 def create_job_report(job, report_filename):
     """Create a detailed report of all Job properties."""
     import datetime
+    global WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
+    global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
     
     report_lines = []
     report_lines.append("=" * 80)
@@ -983,6 +1207,13 @@ def create_job_report(job, report_filename):
     report_lines.append("")
     
     # Stock information
+    stock_extent_x_neg = 0.0
+    stock_extent_x_pos = 0.0
+    stock_extent_y_neg = 0.0
+    stock_extent_y_pos = 0.0
+    stock_extent_z_neg = 0.0
+    stock_extent_z_pos = 0.0
+    
     if hasattr(job, 'Stock') and job.Stock:
         report_lines.append("-" * 80)
         report_lines.append("STOCK INFORMATION")
@@ -1000,6 +1231,224 @@ def create_job_report(job, report_filename):
                         report_lines.append(f"Stock.{prop_name}: {value_str}")
                 except Exception as e:
                     report_lines.append(f"Stock.{prop_name}: <Error: {e}>")
+        
+        # Extract stock extents (oversizes) in all directions
+        if hasattr(stock, 'ExtentXNeg') or hasattr(stock, 'ExtXneg'):
+            stock_extent_x_neg = getattr(stock, 'ExtentXNeg', getattr(stock, 'ExtXneg', None))
+        if hasattr(stock, 'ExtentXPos') or hasattr(stock, 'ExtXpos'):
+            stock_extent_x_pos = getattr(stock, 'ExtentXPos', getattr(stock, 'ExtXpos', None))
+        if hasattr(stock, 'ExtentYNeg') or hasattr(stock, 'ExtYneg'):
+            stock_extent_y_neg = getattr(stock, 'ExtentYNeg', getattr(stock, 'ExtYneg', None))
+        if hasattr(stock, 'ExtentYPos') or hasattr(stock, 'ExtYpos'):
+            stock_extent_y_pos = getattr(stock, 'ExtentYPos', getattr(stock, 'ExtYpos', None))
+        if hasattr(stock, 'ExtentZNeg') or hasattr(stock, 'ExtZneg'):
+            stock_extent_z_neg = getattr(stock, 'ExtentZNeg', getattr(stock, 'ExtZneg', None))
+        if hasattr(stock, 'ExtentZPos') or hasattr(stock, 'ExtZpos'):
+            stock_extent_z_pos = getattr(stock, 'ExtentZPos', getattr(stock, 'ExtZpos', None))
+    
+    report_lines.append("")
+    
+    # Extract float values from Quantity objects if needed
+    def get_float_value(value):
+        """Extract float value from Quantity object or return as-is if already float."""
+        if value is None:
+            return 0.0
+        if hasattr(value, 'Value'):
+            # If Value itself is a Quantity, recurse
+            val = value.Value
+            if hasattr(val, 'Value'):
+                return get_float_value(val)
+            return float(val)
+        return float(value)
+    
+    # Convert all values to float before formatting
+    workpiece_length_val = get_float_value(WORKPIECE_LENGTH)
+    workpiece_width_val = get_float_value(WORKPIECE_WIDTH)
+    workpiece_thickness_val = get_float_value(WORKPIECE_THICKNESS)
+    
+    # Convert stock extents to float
+    stock_extent_x_neg = get_float_value(stock_extent_x_neg)
+    stock_extent_x_pos = get_float_value(stock_extent_x_pos)
+    stock_extent_y_neg = get_float_value(stock_extent_y_neg)
+    stock_extent_y_pos = get_float_value(stock_extent_y_pos)
+    stock_extent_z_neg = get_float_value(stock_extent_z_neg)
+    stock_extent_z_pos = get_float_value(stock_extent_z_pos)
+    
+    # Workpiece dimensions and oversizes section
+    report_lines.append("-" * 80)
+    report_lines.append("WORKPIECE DIMENSIONS AND OVERSIZES")
+    report_lines.append("-" * 80)
+    report_lines.append(f"Workpiece Length (X): {workpiece_length_val:.3f} mm")
+    report_lines.append(f"Workpiece Width (Y):  {workpiece_width_val:.3f} mm")
+    report_lines.append(f"Workpiece Thickness (Z): {workpiece_thickness_val:.3f} mm")
+    report_lines.append("")
+    report_lines.append("Stock Oversizes (Material Allowances):")
+    report_lines.append(f"  X- (negative direction): {stock_extent_x_neg:.3f} mm")
+    report_lines.append(f"  X+ (positive direction): {stock_extent_x_pos:.3f} mm")
+    report_lines.append(f"  Y- (negative direction): {stock_extent_y_neg:.3f} mm")
+    report_lines.append(f"  Y+ (positive direction): {stock_extent_y_pos:.3f} mm")
+    report_lines.append(f"  Z- (negative direction): {stock_extent_z_neg:.3f} mm")
+    report_lines.append(f"  Z+ (positive direction): {stock_extent_z_pos:.3f} mm")
+    report_lines.append("")
+    report_lines.append("Total Stock Dimensions (Workpiece + Oversizes):")
+    report_lines.append(f"  Total Length (X): {workpiece_length_val + stock_extent_x_neg + stock_extent_x_pos:.3f} mm")
+    report_lines.append(f"  Total Width (Y):  {workpiece_width_val + stock_extent_y_neg + stock_extent_y_pos:.3f} mm")
+    report_lines.append(f"  Total Thickness (Z): {workpiece_thickness_val + stock_extent_z_neg + stock_extent_z_pos:.3f} mm")
+    report_lines.append("")
+    
+    # Part dimensions and edge positions
+    report_lines.append("-" * 80)
+    report_lines.append("PART DIMENSIONS AND EDGE POSITIONS (Relative to Job Coordinate System)")
+    report_lines.append("-" * 80)
+    
+    # Try to get part dimensions from Job.Model first (most accurate)
+    part_length = None
+    part_width = None
+    part_height = None
+    min_x = None
+    min_y = None
+    min_z = None
+    max_x = None
+    max_y = None
+    max_z = None
+    
+    try:
+        # First, try to get dimensions from Job.Model (bounding box)
+        if hasattr(job, 'Model') and job.Model:
+            model_obj = job.Model
+            if hasattr(model_obj, 'Shape') and hasattr(model_obj.Shape, 'BoundBox'):
+                bbox = model_obj.Shape.BoundBox
+                part_length = get_float_value(bbox.XLength)
+                part_width = get_float_value(bbox.YLength)
+                part_height = get_float_value(bbox.ZLength)
+                min_x = get_float_value(bbox.XMin)
+                min_y = get_float_value(bbox.YMin)
+                min_z = get_float_value(bbox.ZMin)
+                max_x = get_float_value(bbox.XMax)
+                max_y = get_float_value(bbox.YMax)
+                max_z = get_float_value(bbox.ZMax)
+                report_lines.append("(Dimensions from Job.Model bounding box)")
+            elif hasattr(model_obj, 'BoundBox'):
+                bbox = model_obj.BoundBox
+                part_length = get_float_value(bbox.XLength)
+                part_width = get_float_value(bbox.YLength)
+                part_height = get_float_value(bbox.ZLength)
+                min_x = get_float_value(bbox.XMin)
+                min_y = get_float_value(bbox.YMin)
+                min_z = get_float_value(bbox.ZMin)
+                max_x = get_float_value(bbox.XMax)
+                max_y = get_float_value(bbox.YMax)
+                max_z = get_float_value(bbox.ZMax)
+                report_lines.append("(Dimensions from Job.Model bounding box)")
+        
+        # If Model not available, try Base
+        if part_length is None and hasattr(job, 'Base') and job.Base:
+            try:
+                if isinstance(job.Base, list) and len(job.Base) > 0:
+                    base_obj = job.Base[0]
+                elif hasattr(job.Base, 'Shape'):
+                    base_obj = job.Base
+                else:
+                    base_obj = None
+                
+                if base_obj and hasattr(base_obj, 'Shape') and hasattr(base_obj.Shape, 'BoundBox'):
+                    bbox = base_obj.Shape.BoundBox
+                    part_length = get_float_value(bbox.XLength)
+                    part_width = get_float_value(bbox.YLength)
+                    part_height = get_float_value(bbox.ZLength)
+                    min_x = get_float_value(bbox.XMin)
+                    min_y = get_float_value(bbox.YMin)
+                    min_z = get_float_value(bbox.ZMin)
+                    max_x = get_float_value(bbox.XMax)
+                    max_y = get_float_value(bbox.YMax)
+                    max_z = get_float_value(bbox.ZMax)
+                    report_lines.append("(Dimensions from Job.Base bounding box)")
+            except Exception as e:
+                pass
+        
+        # If still not available, calculate from contours (fallback)
+        if part_length is None:
+            try:
+                min_x, min_y, min_z, max_x, max_y, max_z = calculate_part_bounds()
+                min_x = get_float_value(min_x)
+                min_y = get_float_value(min_y)
+                min_z = get_float_value(min_z)
+                max_x = get_float_value(max_x)
+                max_y = get_float_value(max_y)
+                max_z = get_float_value(max_z)
+                part_length = max_x - min_x
+                part_width = max_y - min_y
+                part_height = max_z - min_z
+                report_lines.append("(Dimensions calculated from contours - may be inaccurate)")
+            except Exception as e:
+                report_lines.append(f"<Error calculating part bounds from contours: {e}>")
+        
+        if part_length is not None:
+            report_lines.append(f"Part Length (X): {part_length:.3f} mm")
+            report_lines.append(f"Part Width (Y):  {part_width:.3f} mm")
+            report_lines.append(f"Part Height (Z): {part_height:.3f} mm")
+            report_lines.append("")
+            report_lines.append("Part Edge Positions (Job Coordinate System):")
+            report_lines.append(f"  X- (minimum X): {min_x:.3f} mm")
+            report_lines.append(f"  X+ (maximum X): {max_x:.3f} mm")
+            report_lines.append(f"  Y- (minimum Y): {min_y:.3f} mm")
+            report_lines.append(f"  Y+ (maximum Y): {max_y:.3f} mm")
+            report_lines.append(f"  Z- (minimum Z): {min_z:.3f} mm")
+            report_lines.append(f"  Z+ (maximum Z): {max_z:.3f} mm")
+            report_lines.append("")
+            report_lines.append("Part Bounding Box:")
+            report_lines.append(f"  From: ({min_x:.3f}, {min_y:.3f}, {min_z:.3f}) mm")
+            report_lines.append(f"  To:   ({max_x:.3f}, {max_y:.3f}, {max_z:.3f}) mm")
+        else:
+            report_lines.append("<Could not determine part dimensions>")
+    except Exception as e:
+        report_lines.append(f"<Error calculating part dimensions: {e}>")
+        import traceback
+        report_lines.append(f"<Traceback: {traceback.format_exc()}>")
+    
+    report_lines.append("")
+    
+    # G54 Coordinate System Offset
+    report_lines.append("-" * 80)
+    report_lines.append("COORDINATE SYSTEM OFFSET (G54)")
+    report_lines.append("-" * 80)
+    if COORDINATE_SYSTEM:
+        # Extract float values from offsets
+        offset_x_val = get_float_value(COORDINATE_OFFSET_X)
+        offset_y_val = get_float_value(COORDINATE_OFFSET_Y)
+        offset_z_val = get_float_value(COORDINATE_OFFSET_Z)
+        
+        report_lines.append(f"Coordinate System: {COORDINATE_SYSTEM}")
+        report_lines.append(f"Offset X: {offset_x_val:.3f} mm")
+        report_lines.append(f"Offset Y: {offset_y_val:.3f} mm")
+        report_lines.append(f"Offset Z: {offset_z_val:.3f} mm")
+        report_lines.append("")
+        report_lines.append("NOTE: This offset is applied ONLY to MPR format coordinates.")
+        report_lines.append("      G-code output remains unchanged (uses original Job coordinates).")
+        if min_x is not None:
+            # Ensure min values are also float
+            min_x_val = get_float_value(min_x)
+            min_y_val = get_float_value(min_y)
+            min_z_val = get_float_value(min_z)
+            
+            report_lines.append("")
+            report_lines.append("Part minimum point (before offset):")
+            report_lines.append(f"  X: {min_x_val:.3f} mm")
+            report_lines.append(f"  Y: {min_y_val:.3f} mm")
+            report_lines.append(f"  Z: {min_z_val:.3f} mm")
+            report_lines.append("")
+            report_lines.append("Part minimum point (after G54 offset, becomes 0,0,0 in MPR):")
+            report_lines.append(f"  X: {min_x_val + offset_x_val:.3f} mm (should be ~0.000)")
+            report_lines.append(f"  Y: {min_y_val + offset_y_val:.3f} mm (should be ~0.000)")
+            report_lines.append(f"  Z: {min_z_val + offset_z_val:.3f} mm (should be ~0.000)")
+    else:
+        report_lines.append("Coordinate System: Project (no offset)")
+        report_lines.append("Offset X: 0.000 mm")
+        report_lines.append("Offset Y: 0.000 mm")
+        report_lines.append("Offset Z: 0.000 mm")
+        report_lines.append("")
+        report_lines.append("NOTE: No coordinate system offset is applied.")
+        report_lines.append("      MPR coordinates match Job coordinates.")
     
     report_lines.append("")
     report_lines.append("=" * 80)
@@ -1495,15 +1944,155 @@ def calculate_part_minimum():
     return (min_x, min_y, min_z)
 
 
-def generate_mpr_content():
+def calculate_part_bounds():
+    """Calculate minimum and maximum X, Y, Z coordinates from all contours and operations.
+    
+    This finds the bounding box of the part which will be used to report
+    part dimensions and edge positions relative to Job coordinate system.
+    
+    Returns:
+        tuple: (min_x, min_y, min_z, max_x, max_y, max_z) or (0.0, 0.0, 0.0, 0.0, 0.0, 0.0) if nothing found
+    """
+    global contours, operations
+    
+    min_x = None
+    min_y = None
+    min_z = None
+    max_x = None
+    max_y = None
+    max_z = None
+    
+    points_checked = 0
+    
+    # Check all contour elements
+    for contour_idx, contour in enumerate(contours):
+        # Check start position
+        start_x, start_y, start_z = contour.get('start_pos', (0.0, 0.0, 0.0))
+        if min_x is None or start_x < min_x:
+            min_x = start_x
+        if max_x is None or start_x > max_x:
+            max_x = start_x
+        if min_y is None or start_y < min_y:
+            min_y = start_y
+        if max_y is None or start_y > max_y:
+            max_y = start_y
+        if min_z is None or start_z < min_z:
+            min_z = start_z
+        if max_z is None or start_z > max_z:
+            max_z = start_z
+        points_checked += 1
+        
+        # Track previous point for arc center calculation
+        prev_x = start_x
+        prev_y = start_y
+        prev_z = start_z
+        
+        # Check all elements in contour
+        for elem_idx, elem in enumerate(contour.get('elements', [])):
+            x = elem.get('x', 0.0)
+            y = elem.get('y', 0.0)
+            z = elem.get('z', 0.0)
+            
+            # Check end point
+            if min_x is None or x < min_x:
+                min_x = x
+            if max_x is None or x > max_x:
+                max_x = x
+            if min_y is None or y < min_y:
+                min_y = y
+            if max_y is None or y > max_y:
+                max_y = y
+            if min_z is None or z < min_z:
+                min_z = z
+            if max_z is None or z > max_z:
+                max_z = z
+            points_checked += 1
+            
+            # For arcs, also check center point and extent
+            if elem.get('type') == 'KA':  # Arc element
+                center_x = prev_x + elem.get('i', 0.0)
+                center_y = prev_y + elem.get('j', 0.0)
+                center_z = prev_z  # Arc center Z is same as previous Z for XY plane arcs
+                
+                # Check center point
+                if min_x is None or center_x < min_x:
+                    min_x = center_x
+                if max_x is None or center_x > max_x:
+                    max_x = center_x
+                if min_y is None or center_y < min_y:
+                    min_y = center_y
+                if max_y is None or center_y > max_y:
+                    max_y = center_y
+                if min_z is None or center_z < min_z:
+                    min_z = center_z
+                if max_z is None or center_z > max_z:
+                    max_z = center_z
+                points_checked += 1
+                
+                # For arcs, also check if radius extends beyond end point
+                radius = elem.get('r', 0.0)
+                if radius > 0.001:
+                    # Check X and Y extents (center ± radius)
+                    arc_min_x = center_x - radius
+                    arc_max_x = center_x + radius
+                    arc_min_y = center_y - radius
+                    arc_max_y = center_y + radius
+                    if min_x is None or arc_min_x < min_x:
+                        min_x = arc_min_x
+                    if max_x is None or arc_max_x > max_x:
+                        max_x = arc_max_x
+                    if min_y is None or arc_min_y < min_y:
+                        min_y = arc_min_y
+                    if max_y is None or arc_max_y > max_y:
+                        max_y = arc_max_y
+            
+            # Update previous point for next iteration
+            prev_x = x
+            prev_y = y
+            prev_z = z
+    
+    # Check all drilling operations
+    for op in operations:
+        if op.get('type') == 'BohrVert':
+            xa = op.get('xa', 0.0)
+            ya = op.get('ya', 0.0)
+            depth = op.get('depth', 0.0)
+            z = -depth  # Depth is negative Z
+            
+            if min_x is None or xa < min_x:
+                min_x = xa
+            if max_x is None or xa > max_x:
+                max_x = xa
+            if min_y is None or ya < min_y:
+                min_y = ya
+            if max_y is None or ya > max_y:
+                max_y = ya
+            if min_z is None or z < min_z:
+                min_z = z
+            if max_z is None or z > max_z:
+                max_z = z
+            points_checked += 1
+    
+    # Return bounds or (0,0,0,0,0,0) if nothing found
+    if min_x is None:
+        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    
+    return (min_x, min_y, min_z, max_x, max_y, max_z)
+
+
+def generate_mpr_content(z_safe=20.0):
     """Generate complete MPR format content and return as string.
     
     NOTE: If COORDINATE_SYSTEM is set (G54, G55, etc.), coordinates will be offset
     by the minimum part coordinates. This offset is applied ONLY to MPR format.
     G-code generation is NOT affected and remains unchanged.
+    
+    Args:
+        z_safe: Safe height value for UF and ZS parameters (default: 20.0 mm)
     """
     global contours, operations, WORKPIECE_LENGTH, WORKPIECE_WIDTH, WORKPIECE_THICKNESS
-    global STOCK_EXTENT_X, STOCK_EXTENT_Y, OUTPUT_COMMENTS, PRECISION, now
+    global STOCK_EXTENT_X, STOCK_EXTENT_Y, STOCK_EXTENT_X_NEG, STOCK_EXTENT_X_POS, STOCK_EXTENT_Y_NEG, STOCK_EXTENT_Y_POS
+    global OUTPUT_COMMENTS, PRECISION, now
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
     global PROGRAM_OFFSET_X, PROGRAM_OFFSET_Y, PROGRAM_OFFSET_Z
     global ENABLE_PROCESSING_ANALYSIS
@@ -1533,8 +2122,9 @@ def generate_mpr_content():
     output.append('SR="0"')
     output.append('FM="1"')
     output.append('ML="2000"')
-    output.append('UF="20"')
-    output.append('ZS="20"')
+    # UF and ZS must reference the variable z_safe, not the value
+    output.append('UF="z_safe"')
+    output.append('ZS="z_safe"')
     output.append('DN="STANDARD"')
     output.append('DST="0"')
     output.append('GP="0"')
@@ -1574,16 +2164,20 @@ def generate_mpr_content():
     output.append('INFO3=""')
     output.append('INFO4=""')
     output.append('INFO5=""')
+    # _BSX, _BSY, _BSZ are base dimensions (workpiece dimensions)
     output.append(f'_BSX={fmt(WORKPIECE_LENGTH)}')
     output.append(f'_BSY={fmt(WORKPIECE_WIDTH)}')
     output.append(f'_BSZ={fmt(WORKPIECE_THICKNESS)}')
-    output.append(f'_FNX={fmt(STOCK_EXTENT_X)}')
-    output.append(f'_FNY={fmt(STOCK_EXTENT_Y)}')
+    # _FNX, _FNY are front offsets (left and front offsets = l_off and f_off)
+    output.append(f'_FNX={fmt(STOCK_EXTENT_X_NEG)}')
+    output.append(f'_FNY={fmt(STOCK_EXTENT_Y_NEG)}')
+    # _RNX, _RNY, _RNZ are program offsets
     output.append(f'_RNX={fmt(PROGRAM_OFFSET_X)}')
     output.append(f'_RNY={fmt(PROGRAM_OFFSET_Y)}')
     output.append(f'_RNZ={fmt(PROGRAM_OFFSET_Z)}')
-    output.append(f'_RX={fmt(WORKPIECE_LENGTH + 2 * STOCK_EXTENT_X)}')
-    output.append(f'_RY={fmt(WORKPIECE_WIDTH + 2 * STOCK_EXTENT_Y)}')
+    # _RX and _RY are total stock dimensions: l_off + l + r_oz and f_off + w + b_oz
+    output.append(f'_RX={fmt(STOCK_EXTENT_X_NEG + WORKPIECE_LENGTH + STOCK_EXTENT_X_POS)}')
+    output.append(f'_RY={fmt(STOCK_EXTENT_Y_NEG + WORKPIECE_WIDTH + STOCK_EXTENT_Y_POS)}')
     output.append('')
 
     # Contour elements section
@@ -1609,6 +2203,12 @@ def generate_mpr_content():
         output.append('')
 
         # Add contour elements
+        # Store original (unoffset) coordinates for arc center calculations
+        prev_elem_x_orig = contour.get('start_pos', (0.0, 0.0, 0.0))[0]
+        prev_elem_y_orig = contour.get('start_pos', (0.0, 0.0, 0.0))[1]
+        prev_elem_z_orig = contour.get('start_pos', (0.0, 0.0, 0.0))[2]
+        
+        # Offset coordinates for output
         prev_elem_x = start_x
         prev_elem_y = start_y
         prev_elem_z = start_z
@@ -1673,16 +2273,33 @@ def generate_mpr_content():
                 prev_elem_y = elem_y
                 prev_elem_z = z_value
                 
+                # Update original coordinates for next element
+                prev_elem_x_orig = orig_x
+                prev_elem_y_orig = orig_y
+                prev_elem_z_orig = orig_z
+                
             elif elem['type'] == 'KA':  # Arc
+                # Original coordinates (before offset) for center calculation
+                orig_x = elem['x']
+                orig_y = elem['y']
+                orig_z = elem.get('z', 0.0)
+                
+                # Offset coordinates for output
                 elem_x = elem['x'] + COORDINATE_OFFSET_X
                 elem_y = elem['y'] + COORDINATE_OFFSET_Y
                 z_value = elem.get('z', 0.0) + COORDINATE_OFFSET_Z
                 
-                # Calculate arc center from I, J offsets
-                center_x = prev_elem_x + elem.get('i', 0)
-                center_y = prev_elem_y + elem.get('j', 0)
+                # CRITICAL: Calculate arc center from I, J offsets using ORIGINAL (unoffset) coordinates
+                # I, J are offsets from the original previous point, not the offset one
+                center_x_orig = prev_elem_x_orig + elem.get('i', 0)
+                center_y_orig = prev_elem_y_orig + elem.get('j', 0)
                 
-                # Calculate start and end angles
+                # Apply offset to center coordinates for output
+                center_x = center_x_orig + COORDINATE_OFFSET_X
+                center_y = center_y_orig + COORDINATE_OFFSET_Y
+                
+                # Calculate start and end angles using offset coordinates
+                # Both points and center are already offset, so angles are correct
                 start_angle = math.atan2(prev_elem_y - center_y, prev_elem_x - center_x)
                 end_angle = math.atan2(elem_y - center_y, elem_x - center_x)
                 
@@ -1871,40 +2488,79 @@ def generate_mpr_content():
                 prev_elem_x = elem_x
                 prev_elem_y = elem_y
                 prev_elem_z = z_value
+                
+                # Update original coordinates for next element
+                prev_elem_x_orig = orig_x
+                prev_elem_y_orig = orig_y
+                prev_elem_z_orig = orig_z
 
             output.append('')
 
         output.append('')
 
     # Variables and workpiece section
+    # According to WoodWOP MPR standard, variables in [001] section must be written WITH quotes around values
     output.append('[001')
     output.append(f'l="{fmt(WORKPIECE_LENGTH)}"')
     if OUTPUT_COMMENTS:
-        output.append('KM="Länge in X"')
+        output.append('KM="length in X"')
     output.append(f'w="{fmt(WORKPIECE_WIDTH)}"')
     if OUTPUT_COMMENTS:
-        output.append('KM="Breite in Y"')
+        output.append('KM="width in Y"')
     output.append(f'th="{fmt(WORKPIECE_THICKNESS)}"')
     if OUTPUT_COMMENTS:
-        output.append('KM="Dicke in Z"')
+        output.append('KM="thickness in Z"')
+    output.append(f'x="{fmt(PROGRAM_OFFSET_X)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="offset programs in x"')
+    output.append(f'y="{fmt(PROGRAM_OFFSET_Y)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="offset programs in y"')
+    output.append(f'z="{fmt(PROGRAM_OFFSET_Z)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="z offset"')
+    output.append(f'l_off="{fmt(STOCK_EXTENT_X_NEG)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="left offset"')
+    output.append(f'f_off="{fmt(STOCK_EXTENT_Y_NEG)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="front offset"')
+    output.append(f'r_oz="{fmt(STOCK_EXTENT_X_POS)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="right oversize"')
+    output.append(f'b_oz="{fmt(STOCK_EXTENT_Y_POS)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="back oversize"')
+    output.append(f'z_safe="{fmt(z_safe)}"')
+    if OUTPUT_COMMENTS:
+        output.append('KM="clearance height"')
     output.append('')
 
     output.append(f'<100 \\WerkStck\\')
     output.append(f'LA="l"')
     output.append(f'BR="w"')
     output.append(f'DI="th"')
-    output.append(f'FNX="{fmt(STOCK_EXTENT_X)}"')
-    output.append(f'FNY="{fmt(STOCK_EXTENT_Y)}"')
-    output.append(f'AX="0"')
-    output.append(f'AY="0"')
+    # FNX and FNY must reference variables, not values
+    output.append(f'FNX="l_off"')
+    output.append(f'FNY="f_off"')
+    # RNX, RNY, RNZ must reference variables x, y, z
+    output.append(f'RNX="x"')
+    output.append(f'RNY="y"')
+    output.append(f'RNZ="z"')
+    # RL and RB are formulas
+    output.append(f'RL="l_off+l+r_oz"')
+    output.append(f'RB="f_off+w+b_oz"')
     output.append('')
 
     if OUTPUT_COMMENTS:
-        output.append('<101 \\Comment\\')
+        output.append('<101 \\Kommentar\\')
         output.append(f'KM="Generated by FreeCAD WoodWOP Post Processor"')
         output.append(f'KM="Date: {now.strftime("%Y-%m-%d %H:%M:%S")}"')
         if COORDINATE_SYSTEM:
             output.append(f'KM="Coordinate System: {COORDINATE_SYSTEM} (offset: X={COORDINATE_OFFSET_X:.3f}, Y={COORDINATE_OFFSET_Y:.3f}, Z={COORDINATE_OFFSET_Z:.3f})"')
+        output.append('KAT="Kommentar"')
+        output.append('MNM="Kommentar"')
+        output.append('ORI="1"')
         output.append('')
 
     # Operations section
