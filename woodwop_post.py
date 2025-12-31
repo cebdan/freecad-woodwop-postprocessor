@@ -1805,6 +1805,69 @@ def extract_drilling_operations(obj):
     return drilling_ops
 
 
+def determine_tool_compensation(contour_id):
+    """
+    Determine tool compensation (RK) based on contour position relative to workpiece.
+    
+    RK values:
+    - "WRKL" - Reference left of workpiece (contour is to the left)
+    - "NoWRK" - No workpiece reference (contour is centered/inside)
+    - "WRKR" - Reference right of workpiece (contour is to the right)
+    
+    Args:
+        contour_id: ID of the contour
+        
+    Returns:
+        str: RK value ("WRKL", "NoWRK", or "WRKR")
+    """
+    global contours, WORKPIECE_LENGTH, WORKPIECE_WIDTH, PROGRAM_OFFSET_X, STOCK_EXTENT_X_NEG
+    
+    # Find contour by ID
+    contour = None
+    for c in contours:
+        if c['id'] == contour_id:
+            contour = c
+            break
+    
+    if not contour or not contour['elements']:
+        # Default to NoWRK if contour not found
+        return "NoWRK"
+    
+    # Calculate average X position of contour elements
+    x_positions = []
+    for elem in contour['elements']:
+        if elem['type'] == 'KL':  # Line
+            x_positions.append(elem['x'])
+        elif elem['type'] == 'KA':  # Arc
+            x_positions.append(elem['x'])
+        elif elem['type'] == 'KP':  # Point
+            x_positions.append(elem['x'])
+    
+    if not x_positions:
+        return "NoWRK"
+    
+    # Calculate average X position (with coordinate offset applied)
+    avg_x = sum(x_positions) / len(x_positions)
+    
+    # Workpiece boundaries (with offsets)
+    # Left boundary: PROGRAM_OFFSET_X + STOCK_EXTENT_X_NEG
+    # Right boundary: PROGRAM_OFFSET_X + STOCK_EXTENT_X_NEG + WORKPIECE_LENGTH
+    workpiece_left = PROGRAM_OFFSET_X + STOCK_EXTENT_X_NEG
+    workpiece_right = PROGRAM_OFFSET_X + STOCK_EXTENT_X_NEG + (WORKPIECE_LENGTH or 0)
+    workpiece_center = (workpiece_left + workpiece_right) / 2.0
+    
+    # Determine compensation based on position
+    # Use 10% of workpiece width as threshold for left/right detection
+    threshold = (WORKPIECE_LENGTH or 0) * 0.1
+    
+    if avg_x < workpiece_left - threshold:
+        return "WRKL"  # Contour is to the left of workpiece
+    elif avg_x > workpiece_right + threshold:
+        return "WRKR"  # Contour is to the right of workpiece
+    else:
+        return "NoWRK"  # Contour is centered or inside workpiece
+
+
 def create_contour_milling(obj, contour_id, tool_number):
     """Create Contourfraesen (contour milling) operation."""
     return {
@@ -2564,6 +2627,9 @@ def generate_mpr_content(z_safe=20.0):
         output.append('')
 
     # Operations section
+    # Count Contourfraesen operations for ORI numbering
+    contourfraesen_counter = 0
+    
     for op in operations:
         if op['type'] == 'BohrVert':
             xa = op['xa'] + COORDINATE_OFFSET_X
@@ -2578,16 +2644,73 @@ def generate_mpr_content(z_safe=20.0):
             output.append('')
 
         elif op['type'] == 'Contourfraesen':
+            # Increment counter for ORI (starts at 1)
+            contourfraesen_counter += 1
+            
+            # Find contour to determine last element index
+            contour = None
+            for c in contours:
+                if c['id'] == op['contour']:
+                    contour = c
+                    break
+            
+            # Determine last element index (0-based, so last is len-1)
+            last_element_idx = 0
+            if contour and contour['elements']:
+                last_element_idx = len(contour['elements']) - 1
+            
+            # Determine tool compensation (RK) based on contour position
+            rk_value = determine_tool_compensation(op['contour'])
+            
             output.append(f'<{op["id"]} \\Contourfraesen\\')
             output.append(f'EA="{op["contour"]}:0"')
-            output.append(f'MDA="TAN"')
-            output.append(f'RK="WRKL"')
-            output.append(f'EE="{op["contour"]}:1"')
-            output.append(f'MDE="TAN_AB"')
-            output.append(f'EM="1"')
-            output.append(f'RI="1"')
+            output.append(f'MDA="SEN"')  # Vertical entry (Straight Entry Normal)
+            output.append(f'STUFEN="0"')
+            output.append(f'BL="0"')
+            output.append(f'WZS="1"')
+            output.append(f'OSZI="0"')
+            output.append(f'OSZVS="0"')
+            output.append(f'ZSTART="0"')
+            output.append(f'ANZZST="0"')
+            output.append(f'RK="{rk_value}"')  # Tool compensation (WRKL/NoWRK/WRKR)
+            output.append(f'EE="{op["contour"]}:{last_element_idx}"')  # Last element
+            output.append(f'MDE="SEN_AB"')  # Vertical exit (Straight Exit Normal)
+            output.append(f'EM="0"')
+            output.append(f'RI="1"')  # Direction (1 = clockwise)
             output.append(f'TNO="{op["tool"]}"')
             output.append(f'SM="0"')
+            output.append(f'S_="STANDARD"')
+            output.append(f'F_="5"')
+            output.append(f'AB="0"')
+            output.append(f'AF="0"')
+            output.append(f'AW="0"')
+            output.append(f'BW="0"')
+            output.append(f'VLS="0"')
+            output.append(f'VLE="0"')
+            output.append(f'ZA="@0"')
+            output.append(f'SC="0"')
+            output.append(f'TDM="0"')
+            output.append(f'HP="0"')
+            output.append(f'SP="0"')
+            output.append(f'YVE="0"')
+            output.append(f'WW="1,2,3,401,402,403"')
+            output.append(f'ASG="2"')
+            output.append(f'HP_A_O="STANDARD"')
+            output.append(f'KG="0"')
+            output.append(f'RP="STANDARD"')
+            output.append(f'RSEL="0"')
+            output.append(f'RWID="0"')
+            output.append(f'KAT="Fräsen"')
+            output.append(f'MNM="Vertical trimming"')
+            output.append(f'ORI="{contourfraesen_counter}"')  # Operation index (1, 2, 3, ...)
+            output.append(f'MX="0"')
+            output.append(f'MY="0"')
+            output.append(f'MZ="0"')
+            output.append(f'MXF="1"')
+            output.append(f'MYF="1"')
+            output.append(f'MZF="1"')
+            output.append(f'SYA="0"')
+            output.append(f'SYV="0"')
             output.append('')
 
         elif op['type'] == 'Pocket':
