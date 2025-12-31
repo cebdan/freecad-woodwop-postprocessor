@@ -45,6 +45,14 @@ TOOLTIP_ARGS = '''
   When set, a detailed path commands file (_path_commands.txt) will be created.
   The file contains all Path Commands from all operations for debugging and analysis.
   If not set, no path commands file will be generated.
+--use_g0 or /use_g0: Enable G0 processing as G1 (linear moves)
+  When set, G0 (rapid move) commands are processed as G1 (linear moves) and added to contour.
+  If not set (default), G0 chains at the start and end of trajectory are skipped:
+    - G0 commands before first working element (G1/G2/G3) are skipped (only position updated)
+    - G0 commands after last working element (G1/G2/G3) are skipped (only position updated)
+    - G0 commands between working elements are still processed as G1
+  This is useful because FreeCAD generates approach/retract moves (G0) that should not be
+  included in the contour, as WoodWOP handles these automatically.
 '''
 
 # File extension for WoodWOP MPR files
@@ -100,6 +108,10 @@ ENABLE_PROCESSING_ANALYSIS = False  # Set to True via /p_a or --p_a flag to enab
 # Z-safe minimum override flag
 ENABLE_NO_Z_SAFE20 = False  # Set to True via /no_z_safe20 flag to disable 20mm minimum for z_safe
 
+# G0 processing flag
+USE_G0 = False  # Set to True via /use_g0 flag to process G0 as G1 (linear moves)
+                # If False: G0 chains at start/end of trajectory are skipped (only position updated)
+
 # Tracking
 contour_counter = 1
 contours = []
@@ -141,7 +153,7 @@ def export(objectslist, filename, argstring):
     global contour_counter, contours, operations, tools_used
     global COORDINATE_SYSTEM, COORDINATE_OFFSET_X, COORDINATE_OFFSET_Y, COORDINATE_OFFSET_Z
     global ENABLE_VERBOSE_LOGGING, ENABLE_JOB_REPORT, OUTPUT_NC_FILE, ENABLE_PATH_COMMANDS_EXPORT, ENABLE_PROCESSING_ANALYSIS
-    global ENABLE_NO_Z_SAFE20
+    global ENABLE_NO_Z_SAFE20, USE_G0
     
     # Reset flags first
     ENABLE_VERBOSE_LOGGING = False
@@ -150,6 +162,7 @@ def export(objectslist, filename, argstring):
     ENABLE_PATH_COMMANDS_EXPORT = False
     ENABLE_PROCESSING_ANALYSIS = False
     ENABLE_NO_Z_SAFE20 = False
+    USE_G0 = False
     
     # Parse arguments FIRST to set flags before any other operations
     # This is critical for /log flag to work correctly with FilenameGenerator
@@ -197,6 +210,15 @@ def export(objectslist, filename, argstring):
             elif arg in ['--p_c', '--p-c'] or normalized_arg in ['p_c', 'p-c']:
                 ENABLE_PATH_COMMANDS_EXPORT = True
                 print(f"[WoodWOP] Path commands export enabled via {arg} flag")
+            elif arg in ['--use_g0', '/use_g0'] or normalized_arg == 'use_g0':
+                USE_G0 = True
+                print(f"[WoodWOP] G0 processing enabled via {arg} flag (G0 will be treated as G1)")
+                print(f"[WoodWOP] USE_G0 = True")
+                # Update global variable
+                import sys
+                current_module = sys.modules.get(__name__)
+                if current_module:
+                    current_module.USE_G0 = True
                 print(f"[WoodWOP] ENABLE_PATH_COMMANDS_EXPORT = True")
                 # Update global variable
                 import sys
@@ -1585,6 +1607,8 @@ def get_tool_number(obj):
 
 def extract_contour_from_path(obj):
     """Extract contour elements (points, lines, arcs) from Path commands."""
+    global USE_G0
+    
     elements = []
     current_x = 0.0
     current_y = 0.0
@@ -1601,7 +1625,21 @@ def extract_contour_from_path(obj):
     if not path_commands:
         return elements, (0.0, 0.0, 0.0)
 
-    for cmd in path_commands:
+    # If USE_G0 is False, find first and last "working" elements (G1/G2/G3)
+    # G0 chains before first and after last working elements will be skipped
+    first_working_idx = None
+    last_working_idx = None
+    
+    if not USE_G0:
+        # First pass: find indices of first and last working elements
+        for idx, cmd in enumerate(path_commands):
+            if cmd.Name in ['G1', 'G01', 'G2', 'G02', 'G3', 'G03']:
+                if first_working_idx is None:
+                    first_working_idx = idx
+                last_working_idx = idx
+
+    # Second pass: process commands
+    for idx, cmd in enumerate(path_commands):
         params = cmd.Parameters
 
         # Update position
@@ -1615,22 +1653,50 @@ def extract_contour_from_path(obj):
             start_y = current_y
             start_z = current_z
 
-        # G0 (rapid move) - always treat as G1 (linear move)
+        # G0 (rapid move) processing
         if cmd.Name in ['G0', 'G00']:
             # Check if there is actual movement (dX, dY, or dZ)
-            # Skip if all movements are less than 0.001 (no actual movement)
             dx = abs(x - current_x)
             dy = abs(y - current_y)
             dz = abs(z - current_z)
-            if not (dx < 0.001 and dy < 0.001 and dz < 0.001):
-                line_elem = {
-                    'type': 'KL',  # Line
-                    'x': x,
-                    'y': y,
-                    'z': z,  # Always include Z coordinate
-                    'move_type': 'G0'  # Store original movement type for analysis
-                }
-                elements.append(line_elem)
+            
+            # Skip zero movements
+            if dx < 0.001 and dy < 0.001 and dz < 0.001:
+                # Update position only (no element added)
+                current_x = x
+                current_y = y
+                current_z = z
+                continue
+            
+            # If USE_G0 is False, skip G0 chains at start/end of trajectory
+            if not USE_G0:
+                # Skip G0 before first working element
+                if first_working_idx is not None and idx < first_working_idx:
+                    # Update position only (no element added)
+                    current_x = x
+                    current_y = y
+                    current_z = z
+                    continue
+                # Skip G0 after last working element
+                if last_working_idx is not None and idx > last_working_idx:
+                    # Update position only (no element added)
+                    current_x = x
+                    current_y = y
+                    current_z = z
+                    continue
+            
+            # Process G0 as G1 (linear move) - either USE_G0=True or G0 is between working elements
+            line_elem = {
+                'type': 'KL',  # Line
+                'x': x,
+                'y': y,
+                'z': z,  # Always include Z coordinate
+                'move_type': 'G0'  # Store original movement type for analysis
+            }
+            elements.append(line_elem)
+            current_x = x
+            current_y = y
+            current_z = z
 
         # Linear move (G1) - create line
         elif cmd.Name in ['G1', 'G01']:
@@ -1648,6 +1714,9 @@ def extract_contour_from_path(obj):
                     'move_type': 'G1'  # Store original movement type for analysis
                 }
                 elements.append(line_elem)
+            current_x = x
+            current_y = y
+            current_z = z
 
         # Arc move (G2, G3) - create arc
         elif cmd.Name in ['G2', 'G02', 'G3', 'G03']:
@@ -1694,6 +1763,10 @@ def extract_contour_from_path(obj):
                         'z': seg_z
                     }
                     elements.append(line_elem)
+                # Update position after arc with Z change (converted to segments)
+                current_x = x
+                current_y = y
+                current_z = z
             else:
                 # Normal arc in XY plane - no Z change
                 # Calculate center point (I, J are offsets from start point)
